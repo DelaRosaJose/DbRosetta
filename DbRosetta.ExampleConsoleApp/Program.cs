@@ -6,62 +6,53 @@ internal class Program
 {
     static async Task Main(string[] args)
     {
-        // ==========================================================
-        //  FIX: Initialize the native SQLite library provider
-        // ==========================================================
         SQLitePCL.Batteries.Init();
-
         Console.WriteLine("DbRosetta Universal Database Translator");
         Console.WriteLine("---------------------------------------");
 
-        // --- CONFIGURATION ---
-        // !!! IMPORTANT: Replace this with your actual SQL Server connection string !!!
-        var sqlServerConnectionString = "Server=MSI\\SQLEXPRESS;Database=Cartografia;Trusted_Connection=True;TrustServerCertificate=True;";
-
+        var sqlServerConnectionString = "Server=MSI\\SQLEXPRESS;Database=AdventureWorks2014;Trusted_Connection=True;TrustServerCertificate=True;";
         var outputSqliteFile = "MyTranslatedDb.sqlite";
 
-        // 1. Register all services and dialects
-        var dialects = new List<IDatabaseDialect>
-        {
-            new SqlServerDialect(),
-            new PostgreSqlDialect(),
-            new MySqlDialect(),
-            new SQLiteDialect()
-        };
-
-        var typeService = new TypeMappingService(dialects);
+        var typeService = new TypeMappingService(GetDialects());
         var schemaReader = new SqlServerSchemaReader();
         var schemaWriter = new SQLiteWriter();
+        var dataMigrator = new DataMigrator(); // Instantiate the new service
 
-        // --- EXECUTION ---
         try
         {
-            // Ensure the old SQLite file is deleted for a clean run
             if (File.Exists(outputSqliteFile))
             {
                 File.Delete(outputSqliteFile);
                 Console.WriteLine($"Deleted existing file: {outputSqliteFile}");
             }
 
-            // 2. Open connections to both databases
             await using var sqlConnection = new SqlConnection(sqlServerConnectionString);
             await using var sqliteConnection = new SqliteConnection($"Data Source={outputSqliteFile}");
-
             await sqlConnection.OpenAsync();
             await sqliteConnection.OpenAsync();
             Console.WriteLine("Successfully connected to source (SQL Server) and destination (SQLite).");
 
-            // 3. Read the schema from the source database
-            Console.WriteLine("Reading schema from SQL Server...");
+            // --- STEP 1: READ SCHEMA ---
+            Console.WriteLine("\n[Phase 1/2] Reading schema from SQL Server...");
             var sourceTables = await schemaReader.GetTablesAsync(sqlConnection);
             Console.WriteLine($"Found {sourceTables.Count} tables to translate.");
 
-            // 4. Write the translated schema to the destination database
-            Console.WriteLine("Writing translated schema to SQLite...");
+            // --- STEP 2: WRITE SCHEMA ---
+            Console.WriteLine("[Phase 1/2] Writing translated schema to SQLite...");
             await schemaWriter.WriteSchemaAsync(sqliteConnection, sourceTables, typeService, "SqlServer");
+            Console.WriteLine("[Phase 1/2] Schema creation complete.");
+
+            // --- STEP 3: MIGRATE DATA ---
+            Console.WriteLine("\n[Phase 2/2] Migrating data from source to destination...");
+            await dataMigrator.MigrateDataAsync(sqlConnection, sqliteConnection, sourceTables,
+                (tableName, rows) => {
+                    // This is our progress reporting action
+                    Console.Write($"\r  -> Migrating {tableName}: {rows} rows transferred...");
+                });
+            Console.WriteLine("\n[Phase 2/2] Data migration complete.");
 
             Console.WriteLine("\n---------------------------------------");
-            Console.WriteLine("✅ Schema migration completed successfully!");
+            Console.WriteLine("✅ Migration completed successfully!");
             Console.WriteLine($"A new database file has been created at: {Path.GetFullPath(outputSqliteFile)}");
         }
         catch (Exception ex)
@@ -70,9 +61,19 @@ internal class Program
             Console.WriteLine("\n---------------------------------------");
             Console.WriteLine("❌ An error occurred during migration:");
             Console.WriteLine(ex.Message);
-            // Also print stack trace for better debugging
             Console.WriteLine(ex.StackTrace);
             Console.ResetColor();
         }
+    }
+
+    static List<IDatabaseDialect> GetDialects()
+    {
+        return new List<IDatabaseDialect>
+        {
+            new SqlServerDialect(),
+            new PostgreSqlDialect(),
+            new MySqlDialect(),
+            new SQLiteDialect()
+        };
     }
 }
