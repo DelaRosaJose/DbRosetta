@@ -11,4 +11,8 @@
     <ProjectReference Include="..\DbRosetta.Core\DbRosetta.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.2" />
+  </ItemGroup>
+
 </Project>

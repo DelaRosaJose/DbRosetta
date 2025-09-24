@@ -1,38 +1,78 @@
-﻿
+﻿using Microsoft.Data.SqlClient;
+using Microsoft.Data.Sqlite;
 
-var dialects = new List<IDatabaseDialect>
+
+internal class Program
+{
+    static async Task Main(string[] args)
+    {
+        // ==========================================================
+        //  FIX: Initialize the native SQLite library provider
+        // ==========================================================
+        SQLitePCL.Batteries.Init();
+
+        Console.WriteLine("DbRosetta Universal Database Translator");
+        Console.WriteLine("---------------------------------------");
+
+        // --- CONFIGURATION ---
+        // !!! IMPORTANT: Replace this with your actual SQL Server connection string !!!
+        var sqlServerConnectionString = "Server=MSI\\SQLEXPRESS;Database=Cartografia;Trusted_Connection=True;TrustServerCertificate=True;";
+
+        var outputSqliteFile = "MyTranslatedDb.sqlite";
+
+        // 1. Register all services and dialects
+        var dialects = new List<IDatabaseDialect>
+        {
+            new SqlServerDialect(),
+            new PostgreSqlDialect(),
+            new MySqlDialect(),
+            new SQLiteDialect()
+        };
+
+        var typeService = new TypeMappingService(dialects);
+        var schemaReader = new SqlServerSchemaReader();
+        var schemaWriter = new SQLiteWriter();
+
+        // --- EXECUTION ---
+        try
+        {
+            // Ensure the old SQLite file is deleted for a clean run
+            if (File.Exists(outputSqliteFile))
             {
-                new SqlServerDialect(),
-                new PostgreSqlDialect(),
-                new MySqlDialect(),
-                new SQLiteDialect() // Now includes SQLite!
-            };
+                File.Delete(outputSqliteFile);
+                Console.WriteLine($"Deleted existing file: {outputSqliteFile}");
+            }
 
-var typeService = new TypeMappingService(dialects);
+            // 2. Open connections to both databases
+            await using var sqlConnection = new SqlConnection(sqlServerConnectionString);
+            await using var sqliteConnection = new SqliteConnection($"Data Source={outputSqliteFile}");
 
-// --- Examples of using the TypeMappingService ---
+            await sqlConnection.OpenAsync();
+            await sqliteConnection.OpenAsync();
+            Console.WriteLine("Successfully connected to source (SQL Server) and destination (SQLite).");
 
-// SQL Server NVARCHAR(255) to SQLite TEXT
-var sqlServerNvarchar = new DbColumnInfo { TypeName = "nvarchar", Length = 255 };
-string sqliteType = typeService.TranslateType(sqlServerNvarchar, "SqlServer", "SQLite")!;
-Console.WriteLine($"SQL Server 'nvarchar(255)' becomes '{sqliteType}' in SQLite."); // Expected: TEXT
+            // 3. Read the schema from the source database
+            Console.WriteLine("Reading schema from SQL Server...");
+            var sourceTables = await schemaReader.GetTablesAsync(sqlConnection);
+            Console.WriteLine($"Found {sourceTables.Count} tables to translate.");
 
-// MySQL BIT(1) to PostgreSQL BOOLEAN
-var mySqlBit = new DbColumnInfo { TypeName = "BIT(1)" };
-string pgType = typeService.TranslateType(mySqlBit, "MySql", "PostgreSql")!;
-Console.WriteLine($"MySQL 'BIT(1)' becomes '{pgType}' in PostgreSQL."); // Expected: BOOLEAN
+            // 4. Write the translated schema to the destination database
+            Console.WriteLine("Writing translated schema to SQLite...");
+            await schemaWriter.WriteSchemaAsync(sqliteConnection, sourceTables, typeService, "SqlServer");
 
-// SQLite INTEGER to SQL Server INT
-var sqliteInteger = new DbColumnInfo { TypeName = "INTEGER" };
-string sqlServerType = typeService.TranslateType(sqliteInteger, "SQLite", "SqlServer")!;
-Console.WriteLine($"SQLite 'INTEGER' becomes '{sqlServerType}' in SQL Server."); // Expected: INT
-
-// PostgreSQL UUID to MySQL CHAR(36)
-var pgUuid = new DbColumnInfo { TypeName = "uuid" };
-string mySqlUuid = typeService.TranslateType(pgUuid, "PostgreSql", "MySql")!;
-Console.WriteLine($"PostgreSQL 'uuid' becomes '{mySqlUuid}' in MySQL."); // Expected: CHAR(36)
-
-// SQL Server DECIMAL(18,2) to PostgreSQL NUMERIC(18,2)
-var sqlServerDecimal = new DbColumnInfo { TypeName = "decimal", Precision = 18, Scale = 2 };
-string pgDecimal = typeService.TranslateType(sqlServerDecimal, "SqlServer", "PostgreSql")!;
-Console.WriteLine($"SQL Server 'decimal(18,2)' becomes '{pgDecimal}' in PostgreSQL."); // Expected: NUMERIC(18, 2)
+            Console.WriteLine("\n---------------------------------------");
+            Console.WriteLine("✅ Schema migration completed successfully!");
+            Console.WriteLine($"A new database file has been created at: {Path.GetFullPath(outputSqliteFile)}");
+        }
+        catch (Exception ex)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine("\n---------------------------------------");
+            Console.WriteLine("❌ An error occurred during migration:");
+            Console.WriteLine(ex.Message);
+            // Also print stack trace for better debugging
+            Console.WriteLine(ex.StackTrace);
+            Console.ResetColor();
+        }
+    }
+}
