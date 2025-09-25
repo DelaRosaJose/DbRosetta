@@ -1,5 +1,5 @@
-﻿using System.Data.Common;
-using Microsoft.Data.SqlClient;
+﻿using Microsoft.Data.SqlClient;
+using System.Data.Common;
 
 public class SqlServerSchemaReader : IDatabaseSchemaReader
 {
@@ -39,18 +39,43 @@ public class SqlServerSchemaReader : IDatabaseSchemaReader
         return tables;
     }
 
+    public async Task<List<ViewSchema>> GetViewsAsync(DbConnection connection)
+    {
+        if (!(connection is SqlConnection sqlConnection))
+        {
+            throw new ArgumentException("A SqlConnection is required.", nameof(connection));
+        }
+
+        var views = new List<ViewSchema>();
+        var command = new SqlCommand("SELECT TABLE_NAME, VIEW_DEFINITION FROM INFORMATION_SCHEMA.VIEWS", sqlConnection);
+
+        using (var reader = await command.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                views.Add(new ViewSchema
+                {
+                    ViewName = reader["TABLE_NAME"].ToString()!,
+                    ViewSQL = reader["VIEW_DEFINITION"].ToString()!
+                });
+            }
+        }
+        return views;
+    }
+
+    // All other private helper methods remain the same...
     private async Task<List<ColumnSchema>> GetColumnsForTableAsync(SqlConnection connection, string tableName, string tableSchema)
     {
         var columns = new List<ColumnSchema>();
-        // ENHANCEMENT: Added COLUMNPROPERTY to check for the 'IsIdentity' flag.
-        var command = new SqlCommand($@"
-                    SELECT
-                        COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH,
-                        IS_NULLABLE, COLUMN_DEFAULT, NUMERIC_PRECISION, NUMERIC_SCALE,
-                        COLUMNPROPERTY(object_id('[{tableSchema}].[{tableName}]'), COLUMN_NAME, 'IsIdentity') as IsIdentity
-                    FROM INFORMATION_SCHEMA.COLUMNS
-                    WHERE TABLE_NAME = @TableName AND TABLE_SCHEMA = @TableSchema
-                    ORDER BY ORDINAL_POSITION", connection);
+        var commandText = $@"
+                SELECT
+                    COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH,
+                    IS_NULLABLE, COLUMN_DEFAULT, NUMERIC_PRECISION, NUMERIC_SCALE,
+                    COLUMNPROPERTY(object_id('[{tableSchema}].[{tableName}]'), COLUMN_NAME, 'IsIdentity') as IsIdentity
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_NAME = @TableName AND TABLE_SCHEMA = @TableSchema
+                ORDER BY ORDINAL_POSITION";
+        var command = new SqlCommand(commandText, connection);
         command.Parameters.AddWithValue("@TableName", tableName);
         command.Parameters.AddWithValue("@TableSchema", tableSchema);
 
@@ -63,7 +88,7 @@ public class SqlServerSchemaReader : IDatabaseSchemaReader
                     ColumnName = reader["COLUMN_NAME"].ToString()!,
                     ColumnType = reader["DATA_TYPE"].ToString()!,
                     Length = reader["CHARACTER_MAXIMUM_LENGTH"] != DBNull.Value ? Convert.ToInt32(reader["CHARACTER_MAXIMUM_LENGTH"]) : 0,
-                    IsNullable = reader["IS_NULLABLE"].ToString()!.Equals("YES", StringComparison.OrdinalIgnoreCase),
+                    IsNullable = "YES".Equals(reader["IS_NULLABLE"].ToString(), StringComparison.OrdinalIgnoreCase),
                     DefaultValue = reader["COLUMN_DEFAULT"]?.ToString() ?? string.Empty,
                     Precision = reader["NUMERIC_PRECISION"] != DBNull.Value ? Convert.ToInt32(reader["NUMERIC_PRECISION"]) : 0,
                     Scale = reader["NUMERIC_SCALE"] != DBNull.Value ? Convert.ToInt32(reader["NUMERIC_SCALE"]) : 0,

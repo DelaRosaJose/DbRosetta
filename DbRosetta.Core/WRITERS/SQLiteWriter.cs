@@ -1,7 +1,7 @@
-﻿using System.Data.Common;
+﻿using Microsoft.Data.Sqlite;
+using System.Data.Common;
 using System.Text;
 using System.Text.RegularExpressions;
-using Microsoft.Data.Sqlite;
 
 public class SQLiteWriter : IDatabaseWriter
 {
@@ -30,7 +30,7 @@ public class SQLiteWriter : IDatabaseWriter
             }
             catch (SqliteException ex)
             {
-                throw new Exception($"Failed to create table '{table.TableName}'. Review generated script.\n--- SCRIPT START ---\n{createTableScript}\n--- SCRIPT END ---", ex);
+                throw new Exception($"Failed to create table '{table.TableName}'.\n{createTableScript}", ex);
             }
         }
 
@@ -39,15 +39,37 @@ public class SQLiteWriter : IDatabaseWriter
             foreach (var trigger in table.Triggers)
             {
                 string createTriggerScript = BuildCreateTriggerScript(trigger);
-                var triggerCommand = new SqliteCommand(createTriggerScript, sqliteConnection);
                 try
                 {
+                    var triggerCommand = new SqliteCommand(createTriggerScript, sqliteConnection);
                     await triggerCommand.ExecuteNonQueryAsync();
                 }
                 catch (SqliteException ex)
                 {
-                    throw new Exception($"Failed to create trigger '{trigger.Name}' on table '{trigger.Table}'.\n--- SCRIPT START ---\n{createTriggerScript}\n--- SCRIPT END ---", ex);
+                    throw new Exception($"Failed to create trigger '{trigger.Name}' on table '{trigger.Table}'.\n{createTriggerScript}", ex);
                 }
+            }
+        }
+    }
+
+    public async Task WriteViewsAsync(DbConnection connection, List<ViewSchema> views)
+    {
+        if (!(connection is SqliteConnection sqliteConnection))
+        {
+            throw new ArgumentException("A SqliteConnection is required.", nameof(connection));
+        }
+
+        foreach (var view in views)
+        {
+            string createViewScript = BuildCreateViewScript(view);
+            try
+            {
+                var viewCommand = new SqliteCommand(createViewScript, sqliteConnection);
+                await viewCommand.ExecuteNonQueryAsync();
+            }
+            catch (SqliteException ex)
+            {
+                throw new Exception($"Failed to create view '{view.ViewName}'.\n{createViewScript}", ex);
             }
         }
     }
@@ -68,8 +90,11 @@ public class SQLiteWriter : IDatabaseWriter
             columnLine.Append($"    [{col.ColumnName}] {targetType}");
             if (col.IsIdentity && ts.PrimaryKey.Count == 1 && ts.PrimaryKey[0] == col.ColumnName)
             {
-                columnLine.Append(" PRIMARY KEY AUTOINCREMENT");
-                isPkDefinedInline = true;
+                if (targetType.Equals("INTEGER", StringComparison.OrdinalIgnoreCase))
+                {
+                    columnLine.Append(" PRIMARY KEY AUTOINCREMENT");
+                    isPkDefinedInline = true;
+                }
             }
             if (!col.IsNullable) columnLine.Append(" NOT NULL");
             if (!string.IsNullOrWhiteSpace(col.DefaultValue))
@@ -119,11 +144,8 @@ public class SQLiteWriter : IDatabaseWriter
     private string BuildCreateTriggerScript(TriggerSchema trigger)
     {
         var sb = new StringBuilder();
-
         sb.AppendLine($"CREATE TRIGGER IF NOT EXISTS [{trigger.Name}]");
-
         string triggerTypeClause = trigger.Type == TriggerType.InsteadOf ? "INSTEAD OF" : "AFTER";
-
         if (trigger.Type == TriggerType.InsteadOf)
         {
             sb.AppendLine($"    AFTER {trigger.Event.ToString().ToUpper()} ON [{trigger.Table}] -- MIGRATION WARNING: Was INSTEAD OF");
@@ -132,34 +154,39 @@ public class SQLiteWriter : IDatabaseWriter
         {
             sb.AppendLine($"    {triggerTypeClause} {trigger.Event.ToString().ToUpper()} ON [{trigger.Table}]");
         }
-
         sb.AppendLine("    FOR EACH ROW\nBEGIN");
-
-        // --- FINAL FIX: Add a properly terminated, harmless statement to ensure the trigger body is not empty. ---
-        sb.AppendLine("    SELECT 1; -- This is a placeholder to ensure the trigger is syntactically valid.");
-
+        sb.AppendLine("    SELECT 1; -- Placeholder to ensure the trigger body is not empty.");
         sb.AppendLine();
         if (trigger.Type == TriggerType.InsteadOf)
         {
             sb.AppendLine("    -- # MIGRATION WARNING: SQLite only supports INSTEAD OF triggers on VIEWs.");
-            sb.AppendLine("    -- # This trigger has been created as a placeholder AFTER trigger.");
-            sb.AppendLine("    -- # The original logic must be manually reviewed and adapted.");
         }
         else
         {
             sb.AppendLine("    -- The original T-SQL body below must be manually translated to SQLite syntax.");
         }
-
         sb.AppendLine("    -- --- ORIGINAL SQL SERVER TRIGGER ---");
-
         var bodyLines = trigger.Body.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
         foreach (var line in bodyLines)
         {
             sb.AppendLine($"    -- {line}");
         }
-
         sb.AppendLine("END;");
+        return sb.ToString();
+    }
 
+    private string BuildCreateViewScript(ViewSchema view)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"CREATE VIEW IF NOT EXISTS [{view.ViewName}] AS");
+        sb.AppendLine("SELECT 'This is a placeholder view. The original T-SQL body is below for manual translation.' AS MigrationMessage;");
+        sb.AppendLine();
+        sb.AppendLine("-- --- ORIGINAL SQL SERVER VIEW DEFINITION ---");
+        var bodyLines = view.ViewSQL.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
+        foreach (var line in bodyLines)
+        {
+            sb.AppendLine($"-- {line}");
+        }
         return sb.ToString();
     }
 
