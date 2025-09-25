@@ -1,4 +1,5 @@
-﻿public enum TriggerEvent
+﻿
+public enum TriggerEvent
 {
     Delete,
     Update,
@@ -8,7 +9,11 @@
 public enum TriggerType
 {
     After,
-    Before
+    Before,
+    /// <summary>
+    /// Represents an INSTEAD OF trigger, common in SQL Server.
+    /// </summary>
+    InsteadOf // This was the missing definition
 }
 
 public class TriggerSchema
