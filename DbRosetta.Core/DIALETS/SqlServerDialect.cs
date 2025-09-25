@@ -39,7 +39,10 @@ public class SqlServerTypeMapper : IDatabaseTypeMapper
         { "uniqueidentifier", DbType.Guid },
         { "varbinary", DbType.Binary },
         { "varchar", DbType.AnsiString },
-        { "xml", DbType.Xml }
+        { "xml", DbType.Xml },
+        { "hierarchyid", DbType.String },
+        { "geography", DbType.String },
+        { "geometry", DbType.String }
     };
 
     public DbType MapToGenericType(string dbTypeName)
