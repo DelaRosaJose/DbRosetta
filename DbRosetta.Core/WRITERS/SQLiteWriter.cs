@@ -1,7 +1,7 @@
 ﻿using System.Data.Common;
 using System.Text;
+using System.Text.RegularExpressions;
 using Microsoft.Data.Sqlite;
-
 
 public class SQLiteWriter : IDatabaseWriter
 {
@@ -14,86 +14,135 @@ public class SQLiteWriter : IDatabaseWriter
 
         foreach (var table in tables)
         {
-            var createTableScript = BuildCreateTableScript(table, typeService, sourceDialectName);
-            var command = new SqliteCommand(createTableScript, sqliteConnection);
-            await command.ExecuteNonQueryAsync();
+            string createTableScript = string.Empty;
+            try
+            {
+                createTableScript = BuildCreateTableScript(table, typeService, sourceDialectName);
+                var command = new SqliteCommand(createTableScript, sqliteConnection);
+                await command.ExecuteNonQueryAsync();
+
+                foreach (var index in table.Indexes)
+                {
+                    var createIndexScript = BuildCreateIndexScript(table.TableName, index);
+                    var indexCommand = new SqliteCommand(createIndexScript, sqliteConnection);
+                    await indexCommand.ExecuteNonQueryAsync();
+                }
+            }
+            catch (SqliteException ex)
+            {
+                throw new Exception($"Failed to create table '{table.TableName}'. Review the generated script for syntax errors.\n--- SCRIPT START ---\n{createTableScript}\n--- SCRIPT END ---", ex);
+            }
         }
+    }
+
+    public async Task WriteDataAsync(DbConnection sourceConnection, DbConnection destinationConnection, List<TableSchema> tables)
+    {
+        await Task.CompletedTask;
     }
 
     private string BuildCreateTableScript(TableSchema ts, TypeMappingService typeService, string sourceDialectName)
     {
         var sb = new StringBuilder();
-        var constraints = new List<string>();
+        var allDefinitions = new List<string>();
 
         sb.AppendLine($"CREATE TABLE [{ts.TableName}] (");
 
-        // 1. Define Columns
-        for (int i = 0; i < ts.Columns.Count; i++)
+        foreach (var col in ts.Columns)
         {
-            var col = ts.Columns[i];
-
-            // ==========================================================
-            //  FIX: Populate the DbColumnInfo object correctly
-            // ==========================================================
-            var sourceColumnInfo = new DbColumnInfo
+            var columnLine = new StringBuilder();
+            var dbColInfo = new DbColumnInfo() { TypeName = col.ColumnType, Length = col.Length, Precision = col.Precision, Scale = col.Scale };
+            string targetType = typeService.TranslateType(dbColInfo, sourceDialectName, "SQLite") ?? "TEXT";
+            columnLine.Append($"    [{col.ColumnName}] {targetType}");
+            if (!col.IsNullable) columnLine.Append(" NOT NULL");
+            if (!string.IsNullOrWhiteSpace(col.DefaultValue))
             {
-                TypeName = col.ColumnType,
-                Length = col.Length,
-                Precision = col.Precision,
-                Scale = col.Scale
-            };
-
-            string targetType = typeService.TranslateType(sourceColumnInfo, sourceDialectName, "SQLite") ?? "TEXT";
-
-            var columnLine = new StringBuilder($"    [{col.ColumnName}] {targetType}");
-            if (!col.IsNullable)
-            {
-                columnLine.Append(" NOT NULL");
+                string defaultValue = TranslateSqlServerExpressionToSQLite(col.DefaultValue, isDefaultConstraint: true);
+                columnLine.Append($" DEFAULT {defaultValue}");
             }
-            // (Default value logic can be expanded here)
-
-            sb.AppendLine(columnLine.ToString() + (i < ts.Columns.Count - 1 ? "," : ""));
+            allDefinitions.Add(columnLine.ToString());
         }
 
-        // 2. Define Primary Key Constraint
         if (ts.PrimaryKey.Any())
         {
-            var pkColumns = string.Join(", ", ts.PrimaryKey.Select(pk => $"[{pk}]"));
-            constraints.Add($"    PRIMARY KEY ({pkColumns})");
+            var pkCols = string.Join(", ", ts.PrimaryKey.Select(c => $"[{c}]"));
+            allDefinitions.Add($"    PRIMARY KEY ({pkCols})");
         }
 
-        // 3. Define Foreign Key Constraints
-        if (ts.ForeignKeys.Any())
+        foreach (var fk in ts.ForeignKeys)
         {
-            foreach (var fk in ts.ForeignKeys)
+            allDefinitions.Add($"    FOREIGN KEY ([{fk.ColumnName}]) REFERENCES [{fk.ForeignTableName}] ([{fk.ForeignColumnName}])");
+        }
+
+        if (ts.CheckConstraints.Any())
+        {
+            foreach (var checkClause in ts.CheckConstraints)
             {
-                constraints.Add($"    FOREIGN KEY ([{fk.ColumnName}]) REFERENCES [{fk.ForeignTableName}]([{fk.ForeignColumnName}])");
+                string translatedClause = TranslateSqlServerExpressionToSQLite(checkClause, isDefaultConstraint: false);
+                allDefinitions.Add($"    CHECK ({translatedClause})");
             }
         }
 
-        // 4. Append all constraints to the CREATE TABLE statement
-        if (constraints.Any())
-        {
-            sb.AppendLine(",");
-            sb.AppendLine(string.Join(",\n", constraints));
-        }
-
-        sb.AppendLine(");");
-
-        // 5. Append CREATE INDEX statements
-        if (ts.Indexes.Any())
-        {
-            foreach (var index in ts.Indexes)
-            {
-                string unique = index.IsUnique ? "UNIQUE" : "";
-                var indexColumns = string.Join(", ", index.Columns.Select(c => $"[{c.ColumnName}]" + (c.IsAscending ? "" : " DESC")));
-
-                var safeIndexName = $"IX_{ts.TableName}_{string.Join("_", index.Columns.Select(c => c.ColumnName))}";
-
-                sb.AppendLine($"CREATE {unique} INDEX IF NOT EXISTS [{safeIndexName}] ON [{ts.TableName}] ({indexColumns});");
-            }
-        }
-
+        sb.Append(string.Join(",\n", allDefinitions));
+        sb.AppendLine("\n);");
         return sb.ToString();
+    }
+
+    private string BuildCreateIndexScript(string tableName, IndexSchema index)
+    {
+        var sb = new StringBuilder();
+        sb.Append("CREATE ");
+        if (index.IsUnique) sb.Append("UNIQUE ");
+        sb.Append($"INDEX [{index.IndexName}] ON [{tableName}] (");
+        var indexCols = index.Columns.Select(c => $"[{c.ColumnName}]" + (c.IsAscending ? "" : " DESC"));
+        sb.Append(string.Join(", ", indexCols));
+        sb.Append(");");
+        return sb.ToString();
+    }
+
+    private string TranslateSqlServerExpressionToSQLite(string expression, bool isDefaultConstraint)
+    {
+        if (string.IsNullOrWhiteSpace(expression)) return string.Empty;
+
+        string workExpression = expression.Trim();
+
+        if (isDefaultConstraint)
+        {
+            Match match = Regex.Match(workExpression, @"^\(\((-?\d+(\.\d+)?)\)\)$");
+            if (match.Success) return match.Groups[1].Value;
+
+            match = Regex.Match(workExpression, @"^\(N?'(.*)'\)$");
+            if (match.Success) return $"'{match.Groups[1].Value.Replace("'", "''")}'";
+
+            if (Regex.IsMatch(workExpression, @"^\((getdate|sysdatetime)\(\)\)$", RegexOptions.IgnoreCase)) return "CURRENT_TIMESTAMP";
+            if (Regex.IsMatch(workExpression, @"^\(newid\(\)\)$", RegexOptions.IgnoreCase)) return "(lower(hex(randomblob(16))))";
+
+            match = Regex.Match(workExpression, @"^\(CONVERT\s*\(\s*\[?bit\]?\s*,\s*\(\s*([01])\s*\)\s*\)\)$", RegexOptions.IgnoreCase);
+            if (match.Success) return match.Groups[1].Value;
+        }
+
+        string translated = workExpression;
+        translated = Regex.Replace(translated, @"\bGETDATE\(\)", "CURRENT_TIMESTAMP", RegexOptions.IgnoreCase);
+        translated = Regex.Replace(translated, @"\bSYSDATETIME\(\)", "CURRENT_TIMESTAMP", RegexOptions.IgnoreCase);
+        translated = Regex.Replace(translated, @"\bYEAR\((.*?)\)", "strftime('%Y', $1)", RegexOptions.IgnoreCase);
+        translated = Regex.Replace(translated, @"\bMONTH\((.*?)\)", "strftime('%m', $1)", RegexOptions.IgnoreCase);
+        translated = Regex.Replace(translated, @"\bDAY\((.*?)\)", "strftime('%d', $1)", RegexOptions.IgnoreCase);
+        translated = Regex.Replace(translated, @"\bdateadd\s*\(\s*year\s*,\s*\(?(-?\d+)\)?\s*,\s*([^)]+)\)", "date($2, '$1 years')", RegexOptions.IgnoreCase);
+        translated = Regex.Replace(translated, @"\bdateadd\s*\(\s*month\s*,\s*\(?(-?\d+)\)?\s*,\s*([^)]+)\)", "date($2, '$1 months')", RegexOptions.IgnoreCase);
+        translated = Regex.Replace(translated, @"\bdateadd\s*\(\s*day\s*,\s*\(?(-?\d+)\)?\s*,\s*([^)]+)\)", "date($2, '$1 days')", RegexOptions.IgnoreCase);
+
+        // --- FINAL FIX: Translate SQL Server LIKE with character sets to SQLite GLOB and make it case-insensitive ---
+        // This pattern finds a column [ColName] followed by LIKE '[...]' and converts it to UPPER([ColName]) GLOB '[...]'
+        translated = Regex.Replace(translated, @"(\[\w+\])\s+LIKE\s*('\[.*\]')", "UPPER($1) GLOB $2", RegexOptions.IgnoreCase);
+
+        // This handles any remaining simple LIKEs (not using '[...]') to be case-insensitive
+        translated = Regex.Replace(translated, @"(\[\w+\])\s+LIKE", "UPPER($1) LIKE", RegexOptions.IgnoreCase);
+
+
+        if (!isDefaultConstraint && translated.StartsWith("(") && translated.EndsWith(")"))
+        {
+            translated = translated.Substring(1, translated.Length - 2);
+        }
+
+        return translated;
     }
 }

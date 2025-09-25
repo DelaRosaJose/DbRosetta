@@ -6,4 +6,5 @@
     public List<string> PrimaryKey { get; set; } = new();
     public List<ForeignKeySchema> ForeignKeys { get; set; } = new();
     public List<IndexSchema> Indexes { get; set; } = new();
+    public List<string> CheckConstraints { get; set; } = new();
 }

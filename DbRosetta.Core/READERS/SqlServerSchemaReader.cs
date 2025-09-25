@@ -3,54 +3,7 @@ using Microsoft.Data.SqlClient;
 
 public class SqlServerSchemaReader : IDatabaseSchemaReader
 {
-    private async Task<List<ColumnSchema>> GetColumnsForTableAsync(SqlConnection connection, string tableName)
-    {
-        // Same as before
-        var columns = new List<ColumnSchema>();
-        var command = new SqlCommand(@"
-                SELECT 
-                    COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH,
-                    IS_NULLABLE, COLUMN_DEFAULT, NUMERIC_PRECISION, NUMERIC_SCALE
-                FROM INFORMATION_SCHEMA.COLUMNS 
-                WHERE TABLE_NAME = @TableName
-                ORDER BY ORDINAL_POSITION", connection);
-        command.Parameters.AddWithValue("@TableName", tableName);
-        using (var reader = await command.ExecuteReaderAsync())
-        {
-            while (await reader.ReadAsync())
-            {
-                columns.Add(new ColumnSchema
-                {
-                    ColumnName = reader["COLUMN_NAME"].ToString()!,
-                    ColumnType = reader["DATA_TYPE"].ToString()!,
-                    Length = reader["CHARACTER_MAXIMUM_LENGTH"] != DBNull.Value ? Convert.ToInt32(reader["CHARACTER_MAXIMUM_LENGTH"]) : 0,
-                    IsNullable = reader["IS_NULLABLE"].ToString()!.Equals("YES", StringComparison.OrdinalIgnoreCase),
-                    DefaultValue = reader["COLUMN_DEFAULT"]?.ToString() ?? string.Empty,
-                    Precision = reader["NUMERIC_PRECISION"] != DBNull.Value ? Convert.ToInt32(reader["NUMERIC_PRECISION"]) : 0,
-                    Scale = reader["NUMERIC_SCALE"] != DBNull.Value ? Convert.ToInt32(reader["NUMERIC_SCALE"]) : 0
-                });
-            }
-        }
-        return columns;
-    }
-
-    private async Task<List<string>> GetPrimaryKeyForTableAsync(SqlConnection connection, string tableName)
-    {
-        var primaryKeys = new List<string>();
-        // sp_pkeys is a legacy but simple way to get PKs
-        var command = new SqlCommand($"EXEC sp_pkeys '{tableName}'", connection);
-        using (var reader = await command.ExecuteReaderAsync())
-        {
-            while (await reader.ReadAsync())
-            {
-                primaryKeys.Add(reader["COLUMN_NAME"].ToString()!);
-            }
-        }
-        return primaryKeys;
-    }
-
-
-public async Task<List<TableSchema>> GetTablesAsync(DbConnection connection)
+    public async Task<List<TableSchema>> GetTablesAsync(DbConnection connection)
     {
         if (!(connection is SqlConnection sqlConnection))
         {
@@ -77,21 +30,94 @@ public async Task<List<TableSchema>> GetTablesAsync(DbConnection connection)
         {
             table.Columns = await GetColumnsForTableAsync(sqlConnection, table.TableName);
             table.PrimaryKey = await GetPrimaryKeyForTableAsync(sqlConnection, table.TableName);
-
-            // --- NEW: Read Foreign Keys and Indexes ---
             table.ForeignKeys = await GetForeignKeysForTableAsync(sqlConnection, table.TableName, table.TableSchemaName);
             table.Indexes = await GetIndexesForTableAsync(sqlConnection, table.TableName, table.TableSchemaName);
+
+            // --- ENHANCEMENT: Read Check Constraints ---
+            table.CheckConstraints = await GetCheckConstraintsForTableAsync(sqlConnection, table.TableName, table.TableSchemaName);
         }
 
         return tables;
     }
 
-    // ... GetColumnsForTableAsync and GetPrimaryKeyForTableAsync methods remain the same ...
+    private async Task<List<ColumnSchema>> GetColumnsForTableAsync(SqlConnection connection, string tableName)
+    {
+        var columns = new List<ColumnSchema>();
+        var command = new SqlCommand(@"
+                    SELECT
+                        COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH,
+                        IS_NULLABLE, COLUMN_DEFAULT, NUMERIC_PRECISION, NUMERIC_SCALE
+                    FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_NAME = @TableName
+                    ORDER BY ORDINAL_POSITION", connection);
+        command.Parameters.AddWithValue("@TableName", tableName);
+        using (var reader = await command.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                columns.Add(new ColumnSchema
+                {
+                    ColumnName = reader["COLUMN_NAME"].ToString()!,
+                    ColumnType = reader["DATA_TYPE"].ToString()!,
+                    Length = reader["CHARACTER_MAXIMUM_LENGTH"] != DBNull.Value ? Convert.ToInt32(reader["CHARACTER_MAXIMUM_LENGTH"]) : 0,
+                    IsNullable = reader["IS_NULLABLE"].ToString()!.Equals("YES", StringComparison.OrdinalIgnoreCase),
+                    DefaultValue = reader["COLUMN_DEFAULT"]?.ToString() ?? string.Empty,
+                    Precision = reader["NUMERIC_PRECISION"] != DBNull.Value ? Convert.ToInt32(reader["NUMERIC_PRECISION"]) : 0,
+                    Scale = reader["NUMERIC_SCALE"] != DBNull.Value ? Convert.ToInt32(reader["NUMERIC_SCALE"]) : 0
+                });
+            }
+        }
+        return columns;
+    }
 
-    // --- NEW METHOD: Get Foreign Keys ---
+    private async Task<List<string>> GetPrimaryKeyForTableAsync(SqlConnection connection, string tableName)
+    {
+        var primaryKeys = new List<string>();
+        var command = new SqlCommand($"EXEC sp_pkeys @table_name = '{tableName}'", connection);
+        using (var reader = await command.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                primaryKeys.Add(reader["COLUMN_NAME"].ToString()!);
+            }
+        }
+        return primaryKeys;
+    }
+
+    /// <summary>
+    /// Retrieves CHECK constraint clauses for a specific table.
+    /// </summary>
+    private async Task<List<string>> GetCheckConstraintsForTableAsync(SqlConnection connection, string tableName, string tableSchema)
+    {
+        var constraints = new List<string>();
+        var command = new SqlCommand(@"
+                    SELECT cc.CHECK_CLAUSE
+                    FROM INFORMATION_SCHEMA.CHECK_CONSTRAINTS cc
+                    INNER JOIN INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc 
+                        ON cc.CONSTRAINT_NAME = tc.CONSTRAINT_NAME
+                        AND cc.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA
+                    WHERE tc.TABLE_NAME = @TableName AND tc.TABLE_SCHEMA = @TableSchema", connection);
+
+        command.Parameters.AddWithValue("@TableName", tableName);
+        command.Parameters.AddWithValue("@TableSchema", tableSchema);
+
+        using (var reader = await command.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                if (reader["CHECK_CLAUSE"] != DBNull.Value)
+                {
+                    constraints.Add(reader["CHECK_CLAUSE"].ToString()!);
+                }
+            }
+        }
+        return constraints;
+    }
+
     private async Task<List<ForeignKeySchema>> GetForeignKeysForTableAsync(SqlConnection connection, string tableName, string tableSchema)
     {
         var foreignKeys = new List<ForeignKeySchema>();
+        // This query correctly joins the necessary views to map foreign key columns to their primary key counterparts.
         var command = new SqlCommand(@"
                 SELECT 
                     fk.TABLE_NAME AS FkTable,
@@ -129,7 +155,6 @@ public async Task<List<TableSchema>> GetTablesAsync(DbConnection connection)
         return foreignKeys;
     }
 
-    // --- NEW METHOD: Get Indexes ---
     private async Task<List<IndexSchema>> GetIndexesForTableAsync(SqlConnection connection, string tableName, string tableSchema)
     {
         var indexes = new List<IndexSchema>();
@@ -143,7 +168,6 @@ public async Task<List<TableSchema>> GetTablesAsync(DbConnection connection)
                 {
                     string indexDescription = reader["index_description"].ToString()!;
 
-                    // IMPORTANT: Skip primary key and unique constraints, as they are handled elsewhere.
                     if (indexDescription.Contains("primary key") || indexDescription.Contains("unique constraint"))
                     {
                         continue;
@@ -161,7 +185,6 @@ public async Task<List<TableSchema>> GetTablesAsync(DbConnection connection)
                     foreach (var keyPart in keyParts)
                     {
                         var col = new IndexColumn();
-                        // Check if the column is descending
                         if (keyPart.Contains("(-)"))
                         {
                             col.ColumnName = keyPart.Replace("(-)", "").Trim();
@@ -180,8 +203,7 @@ public async Task<List<TableSchema>> GetTablesAsync(DbConnection connection)
         }
         catch (SqlException)
         {
-            // sp_helpindex can throw an exception if the object isn't a table (e.g., a view).
-            // We can safely ignore this and return an empty list.
+            // sp_helpindex can throw if the object isn't a table. Ignore this and return an empty list.
         }
         return indexes;
     }
