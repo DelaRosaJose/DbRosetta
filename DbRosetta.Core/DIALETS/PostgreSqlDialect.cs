@@ -41,6 +41,7 @@ public class PostgreSqlTypeMapper : IDatabaseTypeMapper
 
     public string MapFromGenericType(DbType genericType, DbColumnInfo columnInfo)
     {
+        // When mapping *to* PostgreSQL, we use its standard, modern types.
         return genericType switch
         {
             DbType.Int64 => "BIGINT",
@@ -54,10 +55,11 @@ public class PostgreSqlTypeMapper : IDatabaseTypeMapper
             DbType.Single => "REAL",
             DbType.Double => "DOUBLE PRECISION",
             DbType.DateTime or DbType.DateTime2 or DbType.Date => "TIMESTAMP WITHOUT TIME ZONE",
-            DbType.Time => "TIME",
+            DbType.Time => "TIME WITHOUT TIME ZONE",
             DbType.Guid => "UUID",
             DbType.Binary => "BYTEA",
-            _ => "TEXT"
+            DbType.Xml => "XML",
+            _ => "TEXT" // Default fallback for unknown types
         };
     }
 }
