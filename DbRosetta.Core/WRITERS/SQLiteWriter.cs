@@ -115,13 +115,23 @@ public class SQLiteWriter : IDatabaseWriter
         }
         foreach (var fk in ts.ForeignKeys)
         {
-            allDefinitions.Add($"    FOREIGN KEY ([{fk.ColumnName}]) REFERENCES [{fk.ForeignTableName}] ([{fk.ForeignColumnName}])");
+            // Join the column lists with commas and quote them
+            var localColumns = string.Join(", ", fk.LocalColumns.Select(c => $"[{c}]"));
+            var foreignColumns = string.Join(", ", fk.ForeignColumns.Select(c => $"[{c}]"));
+
+            // Build the full constraint definition
+            allDefinitions.Add($"    CONSTRAINT [{fk.ForeignKeyName}] FOREIGN KEY ({localColumns}) REFERENCES [{fk.ForeignTable}] ({foreignColumns})");
         }
+
+        // Add Check Constraint definitions
         if (ts.CheckConstraints.Any())
         {
-            foreach (var checkClause in ts.CheckConstraints)
+            // Loop through the CheckConstraintSchema objects
+            foreach (var checkConstraint in ts.CheckConstraints)
             {
-                allDefinitions.Add($"    CHECK ({TranslateSqlServerExpressionToSQLite(checkClause, false)})");
+                // Use the .CheckClause property of the object
+                string translatedClause = TranslateSqlServerExpressionToSQLite(checkConstraint.CheckClause, false);
+                allDefinitions.Add($"    CONSTRAINT [{checkConstraint.ConstraintName}] CHECK ({translatedClause})");
             }
         }
 

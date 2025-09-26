@@ -1,88 +1,112 @@
 ﻿using Microsoft.Data.SqlClient;
 using Microsoft.Data.Sqlite;
+using Npgsql;
+using System.Data.Common;
 
-namespace DbRosetta.ExampleConsoleApp
+internal class Program
 {
-    internal class Program
+    static async Task Main(string[] args)
     {
-        static async Task Main(string[] args)
+        Console.WriteLine("DbRosetta Universal Database Translator");
+        Console.WriteLine("---------------------------------------");
+
+        // --- Configuration ---
+        string destinationDialect = "PostgreSql"; // Change to "SQLite" to run the other path
+        var sqlServerConnectionString = "Server=MSI\\SQLEXPRESS;Database=AdventureWorks2014;Trusted_Connection=True;TrustServerCertificate=True;";
+        var pgConnectionString = "YourPostgreconnection";
+        var outputSqliteFile = "MyTranslatedDb.sqlite";
+
+        // --- Service Initialization ---
+        IDatabaseWriter schemaWriter;
+        DbConnection destinationConnection;
+
+        if (destinationDialect == "SQLite")
         {
-            SQLitePCL.Batteries.Init();
-            Console.WriteLine("DbRosetta Universal Database Translator");
-            Console.WriteLine("---------------------------------------");
-
-            var sqlServerConnectionString = "Server=MSI\\SQLEXPRESS;Database=AdventureWorks2014;Trusted_Connection=True;TrustServerCertificate=True;";
-            var outputSqliteFile = "MyTranslatedDb.sqlite";
-
-            var typeService = new TypeMappingService(GetDialects());
-            var schemaReader = new SqlServerSchemaReader();
-            var schemaWriter = new SQLiteWriter();
-            var dataMigrator = new DataMigrator();
-
-            try
-            {
-                if (File.Exists(outputSqliteFile))
-                {
-                    File.Delete(outputSqliteFile);
-                    Console.WriteLine($"Deleted existing file: {outputSqliteFile}");
-                }
-
-                await using var sqlConnection = new SqlConnection(sqlServerConnectionString);
-                await using var sqliteConnection = new SqliteConnection($"Data Source={outputSqliteFile}");
-                await sqlConnection.OpenAsync();
-                await sqliteConnection.OpenAsync();
-                Console.WriteLine("Successfully connected to source (SQL Server) and destination (SQLite).");
-
-                // --- STEP 1: READ SCHEMA (Tables and Views) ---
-                Console.WriteLine("\n[Phase 1/2] Reading schema from SQL Server...");
-                var sourceTables = await schemaReader.GetTablesAsync(sqlConnection);
-                var sourceViews = await schemaReader.GetViewsAsync(sqlConnection); // Read the views
-                Console.WriteLine($"Found {sourceTables.Count} tables and {sourceViews.Count} views to translate.");
-
-                // --- STEP 2: WRITE SCHEMA (Tables and Views) ---
-                Console.WriteLine("[Phase 1/2] Writing translated schema to SQLite...");
-                await schemaWriter.WriteSchemaAsync(sqliteConnection, sourceTables, typeService, "SqlServer");
-                await schemaWriter.WriteViewsAsync(sqliteConnection, sourceViews); // Write the views
-                Console.WriteLine("[Phase 1/2] Schema creation complete.");
-
-                // --- STEP 3: MIGRATE DATA ---
-                Console.WriteLine("\n[Phase 2/2] Migrating data from source to destination...");
-                // Note: The data migrator only works on tables, so we pass sourceTables.
-                await dataMigrator.MigrateDataAsync(sqlConnection, sqliteConnection, sourceTables,
-                    (tableName, rows) => {
-                        Console.Write($"\r  -> Migrating {tableName}: {rows} rows transferred...");
-                    });
-                Console.WriteLine("\n[Phase 2/2] Data migration complete.");
-
-                Console.WriteLine("\n---------------------------------------");
-                Console.WriteLine("✅ Migration completed successfully!");
-                Console.WriteLine($"A new database file has been created at: {Path.GetFullPath(outputSqliteFile)}");
-            }
-            catch (Exception ex)
-            {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("\n---------------------------------------");
-                Console.WriteLine("❌ An error occurred during migration:");
-                // Use ex.ToString() to get the full exception details, including inner exceptions
-                Console.WriteLine(ex.ToString());
-                Console.ResetColor();
-            }
-            finally
-            {
-                Console.WriteLine("\nPress any key to exit...");
-                Console.ReadKey();
-            }
+            if (File.Exists(outputSqliteFile)) File.Delete(outputSqliteFile);
+            destinationConnection = new SqliteConnection($"Data Source={outputSqliteFile}");
+            schemaWriter = new SQLiteWriter();
+        }
+        else if (destinationDialect == "PostgreSql")
+        {
+            destinationConnection = new NpgsqlConnection(pgConnectionString);
+            schemaWriter = new PostgreSqlWriter();
+        }
+        else
+        {
+            Console.WriteLine("Unsupported destination dialect.");
+            return;
         }
 
-        static List<IDatabaseDialect> GetDialects()
+        var typeService = new TypeMappingService(GetDialects());
+        var schemaReader = new SqlServerSchemaReader();
+        var dataMigrator = new DataMigrator();
+
+        try
         {
-            return new List<IDatabaseDialect>
+            await using var sqlConnection = new SqlConnection(sqlServerConnectionString);
+            await sqlConnection.OpenAsync();
+            await destinationConnection.OpenAsync();
+
+            Console.WriteLine($"Successfully connected to source (SQL Server) and destination ({destinationDialect}).");
+
+            // --- [PHASE 1] READ AND CREATE BASE SCHEMA ---
+            Console.WriteLine("\n[Phase 1/3] Reading and creating base schema...");
+            List<TableSchema> tables = await schemaReader.GetTablesAsync(sqlConnection);
+            List<ViewSchema> views = await schemaReader.GetViewsAsync(sqlConnection);
+            Console.WriteLine($"Found {tables.Count} tables and {views.Count} views to translate.");
+
+            // Writes tables (without indexes/constraints for PostgreSQL) and views.
+            await schemaWriter.WriteSchemaAsync(destinationConnection, tables, typeService, "SqlServer");
+            await schemaWriter.WriteViewsAsync(destinationConnection, views);
+            Console.WriteLine("[Phase 1/3] Base schema creation complete.");
+
+            // --- [PHASE 2] MIGRATE DATA ---
+            Console.WriteLine("\n[Phase 2/3] Migrating data...");
+            await dataMigrator.MigrateDataAsync(sqlConnection, destinationConnection, tables,
+                (tableName, rows) =>
+                {
+                    Console.Write($"\r  -> Migrating {tableName}: {rows} rows transferred...");
+                });
+            Console.WriteLine("\n[Phase 2/3] Data migration complete.");
+
+            // --- [PHASE 3] APPLY INDEXES AND CONSTRAINTS (FOR SUPPORTED WRITERS) ---
+            // This is the crucial new step that applies constraints after data is loaded.
+            if (schemaWriter is PostgreSqlWriter pgWriter)
+            {
+                // The writer instance already holds the schema information from Phase 1.
+                await pgWriter.WriteConstraintsAndIndexesAsync(destinationConnection);
+                Console.WriteLine("[Phase 3/3] Indexes and constraints applied.");
+            }
+
+            Console.WriteLine("\n---------------------------------------");
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine("✅ Migration completed successfully!");
+            Console.ResetColor();
+        }
+        catch (Exception ex)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine("\n---------------------------------------");
+            Console.WriteLine("❌ An error occurred during migration:");
+            Console.WriteLine(ex.ToString());
+            Console.ResetColor();
+        }
+        finally
+        {
+            await destinationConnection.CloseAsync();
+            Console.WriteLine("\nPress any key to exit...");
+            Console.ReadKey();
+        }
+    }
+
+    static List<IDatabaseDialect> GetDialects()
+    {
+        return new List<IDatabaseDialect>
             {
                 new SqlServerDialect(),
                 new PostgreSqlDialect(),
-                new MySqlDialect(),
+                // new MySqlDialect(), // Assuming this exists
                 new SQLiteDialect()
             };
-        }
     }
 }
