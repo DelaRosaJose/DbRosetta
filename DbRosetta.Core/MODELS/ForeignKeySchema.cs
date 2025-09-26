@@ -1,32 +1,43 @@
-﻿public class ForeignKeySchema
+﻿/// <summary>
+/// Represents a foreign key constraint, supporting single or composite (multi-column) keys.
+/// </summary>
+public class ForeignKeySchema
 {
+    /// <summary>
+    /// The name of the foreign key constraint itself (e.g., "FK_SalesOrderDetail_SalesOrderHeader").
+    /// </summary>
+    public string ForeignKeyName { get; set; } = string.Empty;
+
     /// <summary>
     /// The name of the table that contains the foreign key.
     /// </summary>
-    public string TableName { get; set; } = string.Empty;
+    public string LocalTable { get; set; } = string.Empty;
 
     /// <summary>
-    /// The name of the column that is the foreign key.
+    /// The list of column(s) in the local table that make up the foreign key.
+    /// Most often one column, but can be multiple for composite keys.
     /// </summary>
-    public string ColumnName { get; set; } = string.Empty;
+    public List<string> LocalColumns { get; set; } = new();
 
     /// <summary>
     /// The name of the table that the foreign key references.
     /// </summary>
-    public string ForeignTableName { get; set; } = string.Empty;
+    public string ForeignTable { get; set; } = string.Empty;
 
     /// <summary>
-    /// The name of the column in the foreign table that is being referenced.
+    /// The list of column(s) in the foreign table that are being referenced.
+    /// Must match the order and number of LocalColumns.
     /// </summary>
-    public string ForeignColumnName { get; set; } = string.Empty;
+    public List<string> ForeignColumns { get; set; } = new();
 
     /// <summary>
-    /// Indicates if the constraint uses CASCADE on delete.
+    /// The action to take when a referenced row is deleted.
+    /// (e.g., NO ACTION, CASCADE, SET NULL, SET DEFAULT)
     /// </summary>
-    public bool CascadeOnDelete { get; set; }
+    public string DeleteAction { get; set; } = "NO ACTION";
 
     /// <summary>
-    /// Indicates if the foreign key column is nullable.
+    /// The action to take when a referenced row is updated.
     /// </summary>
-    public bool IsNullable { get; set; }
+    public string UpdateAction { get; set; } = "NO ACTION";
 }

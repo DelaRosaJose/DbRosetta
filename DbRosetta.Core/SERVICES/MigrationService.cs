@@ -7,6 +7,20 @@ public class MigrationService
 {
     public async Task ExecuteAsync(MigrationRequest request, Action<string> logProgress)
     {
+        // --- ADD THIS VALIDATION BLOCK ---
+        if (request == null)
+            throw new ArgumentNullException(nameof(request), "Migration request cannot be null.");
+        if (string.IsNullOrWhiteSpace(request.SourceDialect))
+            throw new ArgumentException("Source dialect must be specified in the migration request.", nameof(request.SourceDialect));
+        if (string.IsNullOrWhiteSpace(request.DestinationDialect))
+            throw new ArgumentException("Destination dialect must be specified in the migration request.", nameof(request.DestinationDialect));
+        if (string.IsNullOrWhiteSpace(request.SourceConnectionString))
+            throw new ArgumentException("Source connection string must be provided.", nameof(request.SourceConnectionString));
+        if (string.IsNullOrWhiteSpace(request.DestinationConnectionString))
+            throw new ArgumentException("Destination connection string must be provided.", nameof(request.DestinationConnectionString));
+        // --- END VALIDATION BLOCK ---
+
+
         IDatabaseWriter schemaWriter;
         DbConnection destinationConnection;
 

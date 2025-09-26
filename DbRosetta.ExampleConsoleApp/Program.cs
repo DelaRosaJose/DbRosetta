@@ -8,9 +8,10 @@
         // 1. Define the request
         var request = new MigrationRequest
         {
+            SourceDialect = "SqlServer", // Add this line
             SourceConnectionString = "Server=MSI\\SQLEXPRESS;Database=AdventureWorks2014;Trusted_Connection=True;TrustServerCertificate=True;",
-            DestinationDialect = "SQLite",
-            DestinationConnectionString = "Host=...;Port=...;Username=...;Password=...;Database=...;SslMode=Require"
+            DestinationDialect = "PostgreSql",
+            DestinationConnectionString = "YourPostgreConnection"
         };
 
         // 2. Create the service
