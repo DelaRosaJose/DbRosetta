@@ -1,4 +1,5 @@
-﻿using System.Data.Common;
+﻿using DbRosetta.Core;
+using System.Data.Common;
 
 public interface IDatabaseWriter
 {
@@ -18,7 +19,7 @@ public interface IDatabaseWriter
     /// Applies constraints and indexes after data has been loaded.
     /// This is an optional method for writers that support deferred index creation.
     /// </summary>
-    Task WriteConstraintsAndIndexesAsync(DbConnection connection)
+    Task WriteConstraintsAndIndexesAsync(DbConnection connection, IMigrationProgressHandler progressHandler)
     {
         // Default implementation does nothing, so existing writers don't need to change.
         return Task.CompletedTask;

@@ -1,0 +1,34 @@
+// Add this using statement at the top of the file
+using DbRosetta.Api.Hubs;
+
+var builder = WebApplication.CreateBuilder(args);
+var port = NetUtils.GetFreePort(); // Find a free port
+builder.WebHost.UseUrls($"http://localhost:{port}");
+
+// Add services to the container.
+builder.Services.AddControllers();
+
+// 1. ---> ADD THIS: Register SignalR's services with the dependency injection container.
+builder.Services.AddSignalR();
+
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+
+var app = builder.Build();
+
+// Configure the HTTP request pipeline.
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+
+app.UseHttpsRedirection();
+app.UseAuthorization();
+app.MapControllers();
+
+// 2. ---> ADD THIS: Map the hub to a URL endpoint.
+// This tells the server that WebSocket connections to "/migrationHub" should be handled by MigrationHub.
+app.MapHub<MigrationHub>("/migrationHub");
+
+app.Run();
