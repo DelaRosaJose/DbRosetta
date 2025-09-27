@@ -1,4 +1,5 @@
-﻿using Npgsql;
+﻿using DbRosetta.Core;
+using Npgsql;
 using System.Data.Common;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -139,7 +140,7 @@ public class PostgreSqlWriter : IDatabaseWriter
         }
     }
 
-    public async Task WriteConstraintsAndIndexesAsync(DbConnection connection)
+    public async Task WriteConstraintsAndIndexesAsync(DbConnection connection, IMigrationProgressHandler progressHandler)
     {
         if (_tables is null || _typeService is null || string.IsNullOrEmpty(_sourceDialectName))
         {
@@ -167,10 +168,8 @@ public class PostgreSqlWriter : IDatabaseWriter
                 }
                 catch (NpgsqlException ex)
                 {
-                    Console.ForegroundColor = ConsoleColor.Yellow;
-                    Console.WriteLine($"--> Warning: Could not create unique constraint '{uq.ConstraintName}' on table '{table.TableName}'.");
-                    Console.WriteLine($"    Reason: {ex.Message}");
-                    Console.ResetColor();
+                    await progressHandler.SendWarningAsync($"--> Warning: Could not create unique constraint '{uq.ConstraintName}' on table '{table.TableName}'.");
+                    await progressHandler.SendWarningAsync($"    Reason: {ex.Message}");
                 }
             }
 
@@ -187,10 +186,8 @@ public class PostgreSqlWriter : IDatabaseWriter
                 }
                 catch (NpgsqlException ex)
                 {
-                    Console.ForegroundColor = ConsoleColor.Yellow;
-                    Console.WriteLine($"--> Warning: Could not create foreign key '{fk.ForeignKeyName}' on table '{table.TableName}'.");
-                    Console.WriteLine($"    Reason: {ex.Message}");
-                    Console.ResetColor();
+                    await progressHandler.SendWarningAsync($"--> Warning: Could not create foreign key '{fk.ForeignKeyName}' on table '{table.TableName}'.");
+                    await progressHandler.SendWarningAsync($"    Reason: {ex.Message}");
                 }
             }
 
@@ -206,10 +203,8 @@ public class PostgreSqlWriter : IDatabaseWriter
                 }
                 catch (NpgsqlException ex)
                 {
-                    Console.ForegroundColor = ConsoleColor.Yellow;
-                    Console.WriteLine($"--> Warning: Could not create check constraint '{chk.ConstraintName}' on table '{table.TableName}'.");
-                    Console.WriteLine($"    Reason: {ex.Message}");
-                    Console.ResetColor();
+                    await progressHandler.SendWarningAsync($"--> Warning: Could not create check constraint '{chk.ConstraintName}' on table '{table.TableName}'.");
+                    await progressHandler.SendWarningAsync($"    Reason: {ex.Message}");
                 }
             }
 
@@ -228,11 +223,9 @@ public class PostgreSqlWriter : IDatabaseWriter
                 }
                 catch (NpgsqlException ex)
                 {
-                    Console.ForegroundColor = ConsoleColor.Yellow;
-                    Console.WriteLine($"--> Warning: Could not create index '{index.IndexName}' on table '{table.TableName}'.");
-                    Console.WriteLine($"    Reason: {ex.SqlState}: {ex.Message}");
-                    Console.WriteLine("    Manual Action: This index may need to be created manually, possibly using a different method (e.g., hash index).");
-                    Console.ResetColor();
+                    await progressHandler.SendWarningAsync($"--> Warning: Could not create index '{index.IndexName}' on table '{table.TableName}'.");
+                    await progressHandler.SendWarningAsync($"    Reason: {ex.SqlState}: {ex.Message}");
+                    await progressHandler.SendWarningAsync("    Manual Action: This index may need to be created manually, possibly using a different method (e.g., hash index).");
                 }
             }
         }
@@ -462,7 +455,7 @@ public class PostgreSqlWriter : IDatabaseWriter
     /// Builds an ALTER TABLE statement to add a Foreign Key constraint.
     /// </summary>
     private string BuildAddForeignKeyConstraintScript(string tableName, ForeignKeySchema fk)
-    {  
+    {
         // Build the comma-separated list of local columns, properly quoted.
         var localColumns = string.Join(", ", fk.LocalColumns.Select(c => $"\"{c}\""));
 
@@ -524,22 +517,16 @@ public class PostgreSqlWriter : IDatabaseWriter
         }
 
         // Standard translations
+        workExpression = Regex.Replace(workExpression,
+        @"\bdatediff\s*\(\s*(year|month|day)\s*,\s*([^,]+?)\s*,\s*([^)]+?)\s*\)",
+        @"(DATE_PART('$1', $3) - DATE_PART('$1', $2))", // Simplified translation, relies on later steps for identifiers
+        RegexOptions.IgnoreCase);
+
+        // Standard translations (run after the more specific DATEDIFF)
         workExpression = Regex.Replace(workExpression, @"\[([^\]]+)\]", @"""$1""");
         workExpression = Regex.Replace(workExpression, @"\bN'((?:[^']|'')*)'", "'$1'");
         workExpression = Regex.Replace(workExpression, @"\bgetdate\(\)", "NOW()", RegexOptions.IgnoreCase);
         workExpression = Regex.Replace(workExpression, @"\bsysdatetime\(\)", "NOW()", RegexOptions.IgnoreCase);
-
-        // Date part extraction
-        workExpression = Regex.Replace(workExpression, @"\bYEAR\(([^)]+)\)", @"EXTRACT(YEAR FROM $1::date)", RegexOptions.IgnoreCase);
-        workExpression = Regex.Replace(workExpression, @"\bMONTH\(([^)]+)\)", @"EXTRACT(MONTH FROM $1::date)", RegexOptions.IgnoreCase);
-        workExpression = Regex.Replace(workExpression, @"\bDAY\(([^)]+)\)", @"EXTRACT(DAY FROM $1::date)", RegexOptions.IgnoreCase);
-
-        // --- FINAL ENHANCEMENT: Add DATEADD translation ---
-        // DATEADD(year, -18, date) -> (date + INTERVAL '-18 year')
-        workExpression = Regex.Replace(workExpression,
-            @"\bDATEADD\s*\(\s*(year|month|day)\s*,\s*(-?\d+)\s*,\s*([^)]+)\s*\)",
-            @"($3::timestamp + CAST('$2 $1' AS interval))",
-            RegexOptions.IgnoreCase);
 
         return workExpression;
     }

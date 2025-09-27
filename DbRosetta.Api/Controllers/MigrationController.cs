@@ -1,4 +1,5 @@
 ﻿using DbRosetta.Api.Hubs;
+using DbRosetta.Core.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 
@@ -8,36 +9,33 @@ public class MigrationController : ControllerBase
 {
     private readonly IHubContext<MigrationHub> _hubContext;
 
-    // Inject the SignalR hub for real-time logging
     public MigrationController(IHubContext<MigrationHub> hubContext)
     {
         _hubContext = hubContext;
     }
 
     [HttpPost("start")]
-    public IActionResult StartMigration([FromBody] MigrationRequest request) // Receives the same request object!
+    public IActionResult StartMigration([FromBody] MigrationRequest request)
     {
         Task.Run(async () =>
         {
-            // 1. Create the same service
-            var migrationService = new MigrationService();
+            // 1. Create the concrete SignalR handler
+            var progressHandler = new SignalRProgressHandler(_hubContext);
+
+            // 2. Create the service and give it the handler
+            var migrationService = new MigrationService(progressHandler);
 
             try
             {
-                // 2. Call the same method, but tell it to log progress by sending a SignalR message
-                await migrationService.ExecuteAsync(request, message =>
-                {
-                    // Send the log message to all connected Flutter clients
-                    _hubContext.Clients.All.SendAsync("ReceiveLog", message);
-                });
+                // 3. The service now runs, completely unaware of SignalR
+                await migrationService.ExecuteAsync(request);
             }
-            catch (Exception ex)
+            catch
             {
-                // Send a final failure message
-                _hubContext.Clients.All.SendAsync("MigrationFailed", ex.Message);
+                // The service already sent the failure message via the handler
             }
         });
 
-        return Accepted(); // Immediately tell the UI the job has started
+        return Accepted(new { Message = "Migration job accepted and started." });
     }
 }

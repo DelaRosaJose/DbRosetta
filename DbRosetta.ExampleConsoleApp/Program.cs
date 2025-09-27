@@ -1,4 +1,10 @@
-﻿internal class Program
+﻿using DbRosetta.Core.Services;
+// Located at: DbRosetta.ExampleConsoleApp/Program.cs
+
+using DbRosetta.Core; // <-- ADD THIS using statement
+using DbRosetta.Core.Services; // <-- ADD THIS if you used the sub-namespace
+
+internal class Program
 {
     static async Task Main(string[] args)
     {
@@ -14,13 +20,13 @@
             DestinationConnectionString = "YourPostgreConnection"
         };
 
-        // 2. Create the service
-        var migrationService = new MigrationService();
+
+        var migrationService = new MigrationService(new ConsoleProgressHandler()); // <-- See below
 
         try
         {
             // 3. Call the service and tell it how to log progress (by writing to the console)
-            await migrationService.ExecuteAsync(request, message => Console.WriteLine(message));
+            await migrationService.ExecuteAsync(request);
         }
         catch (Exception)
         {

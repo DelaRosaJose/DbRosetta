@@ -1,6 +1,4 @@
-// --- In DbRosetta.Api/Program.cs ---
-
-// Add this using statement at the top
+// Add this using statement at the top of the file
 using DbRosetta.Api.Hubs;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -8,7 +6,7 @@ var builder = WebApplication.CreateBuilder(args);
 // Add services to the container.
 builder.Services.AddControllers();
 
-// 1. ---> ADD THIS LINE to register SignalR's services for dependency injection.
+// 1. ---> ADD THIS: Register SignalR's services with the dependency injection container.
 builder.Services.AddSignalR();
 
 builder.Services.AddEndpointsApiExplorer();
@@ -24,13 +22,11 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
-
 app.UseAuthorization();
-
 app.MapControllers();
 
-// 2. ---> ADD THIS LINE to map the hub to a specific URL endpoint.
-// This tells the server that WebSocket requests to "/migrationHub" should be handled by MigrationHub.
+// 2. ---> ADD THIS: Map the hub to a URL endpoint.
+// This tells the server that WebSocket connections to "/migrationHub" should be handled by MigrationHub.
 app.MapHub<MigrationHub>("/migrationHub");
 
 app.Run();
