@@ -2,6 +2,8 @@
 using DbRosetta.Api.Hubs;
 
 var builder = WebApplication.CreateBuilder(args);
+var port = NetUtils.GetFreePort(); // Find a free port
+builder.WebHost.UseUrls($"http://localhost:{port}");
 
 // Add services to the container.
 builder.Services.AddControllers();
