@@ -1,9 +1,8 @@
 // Add this using statement at the top of the file
 using DbRosetta.Api.Hubs;
+SQLitePCL.Batteries.Init();
 
 var builder = WebApplication.CreateBuilder(args);
-var port = NetUtils.GetFreePort(); // Find a free port
-builder.WebHost.UseUrls($"http://localhost:{port}");
 
 // Add services to the container.
 builder.Services.AddControllers();
@@ -23,7 +22,8 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.UseHttpsRedirection();
+app.UseHttpsRedirection(); 
+app.UseWebSockets();
 app.UseAuthorization();
 app.MapControllers();
 

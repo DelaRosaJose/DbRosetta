@@ -3,61 +3,49 @@
 /// </summary>
 public class SchemaSorter
 {
-    /// <summary>
-    /// Sorts a list of tables topologically based on their foreign key dependencies.
-    /// Tables without dependencies will appear before tables that depend on them.
-    /// </summary>
-    /// <param name="tables">The unsorted list of tables.</param>
-    /// <returns>A sorted list of tables, or the original list if sorting fails (e.g., due to circular dependencies).</returns>
-    public List<TableSchema> SortTablesByDependency(List<TableSchema> tables)
+    public List<TableSchema> Sort(List<TableSchema> tables)
     {
         var sorted = new List<TableSchema>();
-        var visited = new HashSet<string>();
-        var tableDict = tables.ToDictionary(t => t.TableName, t => t, System.StringComparer.OrdinalIgnoreCase);
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var tableMap = tables.ToDictionary(t => t.TableName, StringComparer.OrdinalIgnoreCase);
 
         foreach (var table in tables)
         {
             if (!visited.Contains(table.TableName))
             {
-                if (!Visit(table, sorted, visited, new HashSet<string>(System.StringComparer.OrdinalIgnoreCase), tableDict))
-                {
-                    // Circular dependency detected, return original list as a fallback
-                    System.Console.WriteLine("Warning: A circular dependency between tables was detected. Schema creation may fail.");
-                    return tables;
-                }
+                Visit(table, tableMap, visited, sorted, new HashSet<string>(StringComparer.OrdinalIgnoreCase));
             }
         }
-
         return sorted;
     }
 
-    private bool Visit(TableSchema table, List<TableSchema> sorted, HashSet<string> visited, HashSet<string> recursionStack, Dictionary<string, TableSchema> tableDict)
+    private void Visit(TableSchema table, Dictionary<string, TableSchema> tableMap, HashSet<string> visited, List<TableSchema> sorted, HashSet<string> visiting)
     {
-        visited.Add(table.TableName);
-        recursionStack.Add(table.TableName);
+        // Add to visiting set to detect circular dependencies
+        if (visiting.Contains(table.TableName))
+        {
+            // In a real-world scenario, you might want to log this or handle it more gracefully.
+            // For now, we'll throw an exception as it's an unresolvable schema issue.
+            throw new Exception($"Circular dependency detected involving table '{table.TableName}'.");
+        }
+        visiting.Add(table.TableName);
 
+        // Recursively visit all dependencies (parent tables) first
         foreach (var fk in table.ForeignKeys)
         {
-            // Only consider dependencies within the list of tables to be migrated
-            if (tableDict.TryGetValue(fk.ForeignTableName, out var dependency))
+            // Only visit if the dependency is within the set of tables being migrated
+            if (tableMap.TryGetValue(fk.ForeignTable, out var dependency) && !visited.Contains(dependency.TableName))
             {
-                if (recursionStack.Contains(dependency.TableName))
-                {
-                    // Circular dependency found
-                    return false;
-                }
-                if (!visited.Contains(dependency.TableName))
-                {
-                    if (!Visit(dependency, sorted, visited, recursionStack, tableDict))
-                    {
-                        return false;
-                    }
-                }
+                Visit(dependency, tableMap, visited, sorted, visiting);
             }
         }
 
-        recursionStack.Remove(table.TableName);
-        sorted.Add(table);
-        return true;
+        // All dependencies have been visited, now we can add the current table
+        visiting.Remove(table.TableName);
+        if (!visited.Contains(table.TableName))
+        {
+            visited.Add(table.TableName);
+            sorted.Add(table);
+        }
     }
 }

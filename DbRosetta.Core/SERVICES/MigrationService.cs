@@ -49,9 +49,20 @@ namespace DbRosetta.Core.Services // Using a sub-namespace is good practice
             switch (request.DestinationDialect)
             {
                 case "SQLite":
-                    var outputSqliteFile = "MyTranslatedDb.sqlite";
-                    if (File.Exists(outputSqliteFile)) File.Delete(outputSqliteFile);
-                    destinationConnection = new SqliteConnection($"Data Source={outputSqliteFile}");
+                    // --- THIS IS THE FIX ---
+                    // The connection string from the UI *is* the file path.
+                    var outputSqliteFile = request.DestinationConnectionString;
+
+                    // The connection string for SQLite needs to be in the format "Data Source=C:\path\to\file.db"
+                    var sqliteConnectionString = $"Data Source={outputSqliteFile}";
+
+                    // Delete the file if it already exists for a clean migration
+                    if (File.Exists(outputSqliteFile))
+                    {
+                        File.Delete(outputSqliteFile);
+                    }
+
+                    destinationConnection = new SqliteConnection(sqliteConnectionString);
                     schemaWriter = new SQLiteWriter();
                     break;
                 case "PostgreSql":
@@ -65,6 +76,7 @@ namespace DbRosetta.Core.Services // Using a sub-namespace is good practice
             var typeService = new TypeMappingService(GetDialects());
             var schemaReader = new SqlServerSchemaReader();
             var dataMigrator = new DataMigrator();
+            var schemaSorter = new SchemaSorter();
 
             // --- 3. Execute the Migration ---
             try
@@ -78,7 +90,14 @@ namespace DbRosetta.Core.Services // Using a sub-namespace is good practice
                 // [PHASE 1] Read and Create Base Schema
                 await _progressHandler.SendLogAsync("\n[Phase 1/3] Reading and creating base schema...");
                 List<TableSchema> tables = await schemaReader.GetTablesAsync(sqlConnection);
+
+                // 2. Sort the tables before using them for schema creation or data migration.
+                tables = schemaSorter.Sort(tables);
+
+
                 List<ViewSchema> views = await schemaReader.GetViewsAsync(sqlConnection);
+
+
                 await _progressHandler.SendLogAsync($"Found {tables.Count} tables and {views.Count} views to translate.");
                 await schemaWriter.WriteSchemaAsync(destinationConnection, tables, typeService, request.SourceDialect);
                 await schemaWriter.WriteViewsAsync(destinationConnection, views);
@@ -87,6 +106,7 @@ namespace DbRosetta.Core.Services // Using a sub-namespace is good practice
                 // [PHASE 2] Migrate Data
                 await _progressHandler.SendLogAsync("\n[Phase 2/3] Migrating data...");
                 await dataMigrator.MigrateDataAsync(sqlConnection, destinationConnection, tables,
+
                     async (tableName, rows) => // Use an async lambda to call the async handler
                     {
                         await _progressHandler.SendProgressAsync(tableName, Convert.ToInt32(rows));

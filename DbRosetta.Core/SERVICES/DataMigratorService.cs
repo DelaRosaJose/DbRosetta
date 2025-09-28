@@ -113,11 +113,99 @@ public class DataMigrator // No longer needs IDataMigrator if this is the only i
         }
     }
 
-    private async Task MigrateDataToSqliteAsync(DbConnection sourceConnection, SqliteConnection destinationConnection, List<TableSchema> tables, Func<string, int, Task> progressAction)
+    private async Task MigrateDataToSqliteAsync(
+     DbConnection sourceConnection,
+     SqliteConnection destinationConnection,
+     List<TableSchema> tables,
+     Func<string, int, Task> progressAction)
     {
-        // This method would also need to be updated to use the async progressAction.
-        // For example:
-        // await progressAction(table.TableName, rowsMigrated);
-        await Task.CompletedTask; // Placeholder
+        await using var transaction = await destinationConnection.BeginTransactionAsync();
+
+        foreach (var table in tables)
+        {
+            if (!table.Columns.Any()) continue;
+
+            int rowsMigrated = 0;
+            var quotedSourceColumns = string.Join(", ", table.Columns.Select(c => $"[{c.ColumnName}]"));
+            var selectCommand = sourceConnection.CreateCommand();
+            selectCommand.CommandText = $"SELECT {quotedSourceColumns} FROM [{table.TableSchemaName}].[{table.TableName}]";
+
+            await using var reader = await selectCommand.ExecuteReaderAsync();
+            await using var insertCommand = BuildSqliteInsertCommand(destinationConnection, table, transaction);
+
+            while (await reader.ReadAsync())
+            {
+                insertCommand.Parameters.Clear();
+                for (int i = 0; i < table.Columns.Count; i++)
+                {
+                    var columnName = table.Columns[i].ColumnName;
+
+                    // --- THIS IS THE FIX ---
+                    // We create a new variable 'finalValue' to hold the sanitized data.
+                    object finalValue;
+                    var rawValue = reader[i];
+
+                    if (rawValue is DBNull || rawValue == null)
+                    {
+                        finalValue = DBNull.Value;
+                    }
+                    else
+                    {
+                        string? valueTypeName = rawValue.GetType().FullName;
+                        if (valueTypeName == SqlHierarchyIdTypeName ||
+                            valueTypeName == SqlGeographyTypeName ||
+                            valueTypeName == SqlGeometryTypeName)
+                        {
+                            // Explicitly convert to string
+                            finalValue = rawValue.ToString() ?? string.Empty;
+                        }
+                        else if (rawValue is string stringValue)
+                        {
+                            finalValue = stringValue.TrimEnd();
+                        }
+                        else
+                        {
+                            // For all other types, use the raw value
+                            finalValue = rawValue;
+                        }
+                    }
+
+                    var parameter = new SqliteParameter($"@{NormalizeParameterName(columnName)}", finalValue);
+                    insertCommand.Parameters.Add(parameter);
+                }
+
+                await insertCommand.ExecuteNonQueryAsync();
+                rowsMigrated++;
+
+                if (rowsMigrated % ProgressReportBatchSize == 0)
+                {
+                    await progressAction(table.TableName, rowsMigrated);
+                }
+            }
+            await progressAction(table.TableName, rowsMigrated);
+        }
+
+        await transaction.CommitAsync();
+    }
+
+    // --- THIS IS THE CORRECTED HELPER METHOD ---
+    private SqliteCommand BuildSqliteInsertCommand(
+        SqliteConnection connection,
+        TableSchema table,
+        DbTransaction transaction) // <-- Changed back to the generic DbTransaction
+    {
+        var columnNames = string.Join(", ", table.Columns.Select(c => $"\"{c.ColumnName}\""));
+        var parameterNames = string.Join(", ", table.Columns.Select(c => $"@{NormalizeParameterName(c.ColumnName)}"));
+
+        var command = connection.CreateCommand();
+        command.Transaction = (SqliteTransaction)transaction;
+        command.CommandText = $"INSERT INTO \"{table.TableName}\" ({columnNames}) VALUES ({parameterNames});";
+        return command;
+    }
+
+
+    private string NormalizeParameterName(string columnName)
+    {
+        return columnName.Replace(" ", "").Replace("-", "");
     }
 }

@@ -7,10 +7,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Remove="SERVICES\SchemaSorter.cs" />
-  </ItemGroup>
-
-  <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.SignalR" Version="1.2.0" />
     <PackageReference Include="Microsoft.Data.SqlClient" Version="6.1.1" />
     <PackageReference Include="Microsoft.Data.Sqlite.Core" Version="9.0.9" />
