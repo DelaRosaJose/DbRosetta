@@ -330,54 +330,6 @@ public class SqlServerSchemaReader : IDatabaseSchemaReader
                 }
             }
         }
-        //using (var reader = await command.ExecuteReaderAsync())
-        //{
-        //    while (await reader.ReadAsync())
-        //    {
-        //        // A trigger can be for multiple events (e.g., FOR INSERT, UPDATE)
-        //        // We need to create a separate TriggerSchema for each event if they are distinct events
-        //        // However, often SQL Server triggers are defined for multiple events in one go (e.g., FOR INSERT, UPDATE)
-        //        // For simplicity here, we'll assume one TriggerSchema object per unique event type found in the T-SQL.
-        //        // If a single T-SQL trigger body handles multiple events, this might need refinement.
-
-        //        string triggerType = reader["TriggerType"].ToString()!; // "InsteadOf" or "After"
-        //        TriggerType parsedTriggerType = (TriggerType)Enum.Parse(typeof(TriggerType), triggerType);
-
-        //        if ("1".Equals(reader["IsInsert"].ToString()))
-        //        {
-        //            triggers.Add(new TriggerSchema
-        //            {
-        //                Name = reader["TriggerName"].ToString()!,
-        //                Table = tableName,
-        //                Body = reader["TriggerBody"].ToString()!,
-        //                Event = TriggerEvent.Insert,
-        //                Type = parsedTriggerType
-        //            });
-        //        }
-        //        if ("1".Equals(reader["IsUpdate"].ToString()))
-        //        {
-        //            triggers.Add(new TriggerSchema
-        //            {
-        //                Name = reader["TriggerName"].ToString()!,
-        //                Table = tableName,
-        //                Body = reader["TriggerBody"].ToString()!,
-        //                Event = TriggerEvent.Update,
-        //                Type = parsedTriggerType
-        //            });
-        //        }
-        //        if ("1".Equals(reader["IsDelete"].ToString()))
-        //        {
-        //            triggers.Add(new TriggerSchema
-        //            {
-        //                Name = reader["TriggerName"].ToString()!,
-        //                Table = tableName,
-        //                Body = reader["TriggerBody"].ToString()!,
-        //                Event = TriggerEvent.Delete,
-        //                Type = parsedTriggerType
-        //            });
-        //        }
-        //    }
-        //}
         return triggers;
     }
 }

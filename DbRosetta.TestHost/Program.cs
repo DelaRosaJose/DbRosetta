@@ -63,15 +63,15 @@ public static class Program
             int destinationType = 1;
 
             // IMPORTANT: Adjust these connection strings for your environment
-            string sourceConnectionString = "Server=MSI\\SQLEXPRESS;Database=AdventureWorks2014;Trusted_Connection=True;TrustServerCertificate=True;";
+            string sourceConnectionString = @"Server=MSI\SQLEXPRESS;Database=AdventureWorks2014;Trusted_Connection=True;TrustServerCertificate=True;";
             string destinationConnectionString = "Data Source=AdventureWorks_Test_From_Host.db";
 
             string requestJson = $@"{{
-        ""SourceType"": {sourceType},
-        ""DestinationType"": {destinationType},
-        ""SourceConnectionString"": ""{sourceConnectionString.Replace(@"\", @"\\")}"",
-        ""DestinationConnectionString"": ""{destinationConnectionString}""
-    }}";
+    ""sourceDialect"": ""SqlServer"",
+    ""destinationDialect"": ""SQLite"",
+    ""sourceConnectionString"": ""{sourceConnectionString.Replace(@"\", @"\\")}"",
+    ""destinationConnectionString"": ""{destinationConnectionString}""
+}}";
 
             // Marshall the C# string to a native UTF-8 string pointer
             requestJsonPtr = Marshal.StringToCoTaskMemUTF8(requestJson);

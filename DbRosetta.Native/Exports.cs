@@ -19,6 +19,14 @@ public delegate void FinishedCallback();
 
 public static class Exports
 {
+
+    // Este constructor estático se ejecuta una sola vez cuando la DLL se carga.
+    // Es el lugar perfecto para la inicialización que afecta a toda la librería.
+    static Exports()
+    {
+        SQLitePCL.Batteries.Init();
+    }
+
     // This is the single function exported from the native library.
     // The EntryPoint string must match what the host uses to import it.
     [UnmanagedCallersOnly(EntryPoint = "start_migration")]

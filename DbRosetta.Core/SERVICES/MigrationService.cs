@@ -33,9 +33,9 @@ namespace DbRosetta.Core.Services // Using a sub-namespace is good practice
             // --- 1. Input Validation (Guard Clauses) ---
             if (request == null)
                 throw new ArgumentNullException(nameof(request), "Migration request cannot be null.");
-            if (string.IsNullOrWhiteSpace(request.SourceDialect))
+            if (string.IsNullOrWhiteSpace(request.SourceDialect.ToString()))
                 throw new ArgumentException("Source dialect must be specified.", nameof(request.SourceDialect));
-            if (string.IsNullOrWhiteSpace(request.DestinationDialect))
+            if (string.IsNullOrWhiteSpace(request.DestinationDialect.ToString()))
                 throw new ArgumentException("Destination dialect must be specified.", nameof(request.DestinationDialect));
             if (string.IsNullOrWhiteSpace(request.SourceConnectionString))
                 throw new ArgumentException("Source connection string must be provided.", nameof(request.SourceConnectionString));
@@ -48,7 +48,7 @@ namespace DbRosetta.Core.Services // Using a sub-namespace is good practice
 
             switch (request.DestinationDialect)
             {
-                case "SQLite":
+                case DatabaseEngine.SQLite:
                     // --- THIS IS THE FIX ---
                     // The connection string from the UI *is* the file path.
                     var outputSqliteFile = request.DestinationConnectionString;
@@ -65,7 +65,7 @@ namespace DbRosetta.Core.Services // Using a sub-namespace is good practice
                     destinationConnection = new SqliteConnection(sqliteConnectionString);
                     schemaWriter = new SQLiteWriter();
                     break;
-                case "PostgreSql":
+                case DatabaseEngine.PostgreSql:
                     destinationConnection = new NpgsqlConnection(request.DestinationConnectionString);
                     schemaWriter = new PostgreSqlWriter();
                     break;
@@ -99,7 +99,7 @@ namespace DbRosetta.Core.Services // Using a sub-namespace is good practice
 
 
                 await _progressHandler.SendLogAsync($"Found {tables.Count} tables and {views.Count} views to translate.");
-                await schemaWriter.WriteSchemaAsync(destinationConnection, tables, typeService, request.SourceDialect);
+                await schemaWriter.WriteSchemaAsync(destinationConnection, tables, typeService, request.SourceDialect.ToString());
                 await schemaWriter.WriteViewsAsync(destinationConnection, views);
                 await _progressHandler.SendLogAsync("[Phase 1/3] Base schema creation complete.");
 
