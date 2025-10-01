@@ -1,7 +1,22 @@
-﻿public class MigrationRequest
+﻿using System.Text.Json.Serialization;
+
+public class MigrationRequest
 {
-    public string SourceDialect { get; set; }
-    public string SourceConnectionString { get; set; }
-    public string DestinationDialect { get; set; }
-    public string DestinationConnectionString { get; set; }
+
+    [JsonConverter(typeof(JsonStringEnumConverter<DatabaseEngine>))]
+    public DatabaseEngine SourceDialect { get; set; }
+
+    [JsonConverter(typeof(JsonStringEnumConverter<DatabaseEngine>))]
+    public DatabaseEngine DestinationDialect { get; set; }
+
+
+    public required string SourceConnectionString { get; set; }
+    public required string DestinationConnectionString { get; set; }
+}
+
+public enum DatabaseEngine
+{
+    SqlServer,
+    SQLite,
+    PostgreSql
 }

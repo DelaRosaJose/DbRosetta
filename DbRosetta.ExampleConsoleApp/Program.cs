@@ -14,10 +14,10 @@ internal class Program
         // 1. Define the request
         var request = new MigrationRequest
         {
-            SourceDialect = "SqlServer", // Add this line
+            SourceDialect = DatabaseEngine.SqlServer, // Add this line
             SourceConnectionString = "Server=MSI\\SQLEXPRESS;Database=AdventureWorks2014;Trusted_Connection=True;TrustServerCertificate=True;",
-            DestinationDialect = "PostgreSql",
-            DestinationConnectionString = "YourPostgreConnection"
+            DestinationDialect = DatabaseEngine.SQLite,
+            DestinationConnectionString = "Data.sqlite"
         };
 
 

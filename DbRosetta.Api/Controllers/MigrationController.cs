@@ -17,22 +17,31 @@ public class MigrationController : ControllerBase
     [HttpPost("start")]
     public IActionResult StartMigration([FromBody] MigrationRequest request)
     {
-        Task.Run(async () =>
+        // --- THIS IS THE FIX ---
+        // We run the entire operation, including service creation and the try/catch,
+        // inside the background task.
+        _ = Task.Run(async () =>
         {
-            // 1. Create the concrete SignalR handler
+            // Create the handler that knows how to talk to the client
             var progressHandler = new SignalRProgressHandler(_hubContext);
 
-            // 2. Create the service and give it the handler
+            // Create the core migration engine
             var migrationService = new MigrationService(progressHandler);
 
             try
             {
-                // 3. The service now runs, completely unaware of SignalR
+                // Await the entire migration process
                 await migrationService.ExecuteAsync(request);
             }
-            catch
+            catch (Exception ex)
             {
-                // The service already sent the failure message via the handler
+                // If ExecuteAsync throws an unhandled exception, this will catch it.
+                // The service itself should have already sent a more specific
+                // failure message, but this is a final safety net.
+                Console.WriteLine($"--- UNHANDLED MIGRATION EXCEPTION: {ex} ---");
+
+                // Send a generic failure message to the client so the UI can unlock.
+                await progressHandler.SendFailureAsync("An unexpected error occurred in the migration engine.", ex.ToString());
             }
         });
 
