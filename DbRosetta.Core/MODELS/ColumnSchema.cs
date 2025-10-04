@@ -6,7 +6,16 @@
     public int Precision { get; set; }
     public int Scale { get; set; }
     public bool IsNullable { get; set; }
-    public string DefaultValue { get; set; } = string.Empty;
     public bool IsIdentity { get; set; }
     public bool? IsCaseSensitivite { get; set; }
+
+    /// <summary>
+    /// The original, unprocessed default value string from the source database.
+    /// </summary>
+    public string DefaultValueAsString { get; set; } = string.Empty;
+
+    /// <summary>
+    /// The parsed, universal Abstract Syntax Tree for the default value.
+    /// </summary>
+    public ExpressionNode? DefaultValueAst { get; set; }
 }

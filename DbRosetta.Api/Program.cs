@@ -1,5 +1,7 @@
 // Add this using statement at the top of the file
 using DbRosetta.Api.Hubs;
+using DbRosetta.Core.Interfaces;
+using DbRosetta.Core.Services;
 SQLitePCL.Batteries.Init();
 
 var builder = WebApplication.CreateBuilder(args);
@@ -12,6 +14,14 @@ builder.Services.AddSignalR();
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+
+// Add logging
+builder.Services.AddLogging();
+
+// Register DbRosetta.Core services
+builder.Services.AddSingleton<DatabaseProviderFactory>();
+builder.Services.AddTransient<IDataMigrator, DataMigratorService>();
+builder.Services.AddTransient<MigrationService>();
 
 var app = builder.Build();
 

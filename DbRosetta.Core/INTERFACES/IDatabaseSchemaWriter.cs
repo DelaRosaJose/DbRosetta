@@ -1,7 +1,7 @@
-﻿using DbRosetta.Core;
+using DbRosetta.Core;
 using System.Data.Common;
 
-public interface IDatabaseWriter
+public interface IDatabaseSchemaWriter
 {
     /// <summary>
     /// Generates and executes the necessary SQL to create the database tables and related objects.

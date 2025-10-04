@@ -1,20 +1,21 @@
-﻿using System.Data.Common;
+﻿using DbRosetta.Core.Models;
+using System.Data.Common;
 
-/// <summary>
-/// Defines the contract for migrating data from a source to a destination database.
-/// </summary>
-public interface IDataMigrator
+namespace DbRosetta.Core.Interfaces
 {
     /// <summary>
-    /// Migrates data for a given list of tables.
+    /// Interface for migrating data from source to destination database.
     /// </summary>
-    /// <param name="sourceConnection">An open connection to the source database.</param>
-    /// <param name="destinationConnection">An open connection to the destination database.</param>
-    /// <param name="tables">The schema of the tables whose data needs to be migrated.</param>
-    /// <param name="progressAction">An action to report progress on rows migrated per table.</param>
-    Task MigrateDataAsync(
-        DbConnection sourceConnection,
-        DbConnection destinationConnection,
-        List<TableSchema> tables,
-        Action<string, long> progressAction);
+    public interface IDataMigrator
+    {
+        /// <summary>
+        /// Migrates data for the specified tables from source to destination.
+        /// </summary>
+        /// <param name="sourceConnection">The source database connection.</param>
+        /// <param name="destinationConnection">The destination database connection.</param>
+        /// <param name="tables">The list of tables to migrate.</param>
+        /// <param name="progressAction">Action to report progress.</param>
+        /// <returns>A task representing the asynchronous operation.</returns>
+        Task MigrateDataAsync(DbConnection sourceConnection, DbConnection destinationConnection, List<TableSchema> tables, Func<string, int, Task> progressAction);
+    }
 }

@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using DbRosetta.Core;
 using DbRosetta.Core.Services;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace DbRosetta.Native;
 
@@ -55,7 +56,10 @@ public static class Exports
 
                 // Set up and run the migration
                 var handler = new FfiProgressHandler(onLog, onProgress);
-                var migrationService = new MigrationService(handler);
+                var factory = new DatabaseProviderFactory();
+                var logger = NullLogger<DataMigratorService>.Instance;
+                var dataMigrator = new DataMigratorService(factory, logger);
+                var migrationService = new MigrationService(handler, factory, dataMigrator);
                 migrationService.ExecuteAsync(request).Wait();
 
                 handler.SendSuccessAsync("✅ Migration completed successfully!").Wait();

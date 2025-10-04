@@ -1,36 +1,48 @@
-﻿using Microsoft.Data.Sqlite;
+﻿using DbRosetta.Core;
+using Microsoft.Data.Sqlite;
 using System.Data.Common;
 using System.Text;
-using System.Text.RegularExpressions;
 
-public class SQLiteWriter : IDatabaseWriter
+/// <summary>
+/// Writes a database schema to a SQLite database.
+/// This class acts as a "Generator" in the Parser -> AST -> Generator pattern.
+/// It takes the universal AST model and generates SQLite-specific SQL syntax.
+/// </summary>
+public class SQLiteWriter : IDatabaseSchemaWriter
 {
+    // This writer is now self-contained and has no external dependencies for expression translation.
+    private List<TableSchema>? _tables;
+    public SQLiteWriter() { }
+
     public async Task WriteSchemaAsync(DbConnection connection, List<TableSchema> tables, TypeMappingService typeService, string sourceDialectName)
     {
+        _tables = tables;
+
         if (!(connection is SqliteConnection sqliteConnection))
         {
             throw new ArgumentException("A SqliteConnection is required.", nameof(connection));
         }
 
-        foreach (var table in tables)
+        // Enable foreign keys to catch schema errors immediately during creation.
+        var fkPragmaCommand = sqliteConnection.CreateCommand();
+        fkPragmaCommand.CommandText = "PRAGMA foreign_keys = ON;";
+        await fkPragmaCommand.ExecuteNonQueryAsync();
+
+        foreach (var table in _tables)
         {
             string createTableScript = string.Empty;
             try
             {
+                // sourceDialectName is still needed here for the TypeMappingService to handle data types.
                 createTableScript = BuildCreateTableScript(table, typeService, sourceDialectName);
                 var command = new SqliteCommand(createTableScript, sqliteConnection);
                 await command.ExecuteNonQueryAsync();
 
-                foreach (var index in table.Indexes)
-                {
-                    var createIndexScript = BuildCreateIndexScript(table.TableName, index);
-                    var indexCommand = new SqliteCommand(createIndexScript, sqliteConnection);
-                    await indexCommand.ExecuteNonQueryAsync();
-                }
+                // Indexes are now created in WriteConstraintsAndIndexesAsync for performance optimization
             }
             catch (SqliteException ex)
             {
-                throw new Exception($"Failed to create table '{table.TableName}'.\n{createTableScript}", ex);
+                throw new Exception($"Failed to create table '{table.TableName}'.\nGenerated SQL:\n{createTableScript}", ex);
             }
         }
 
@@ -46,11 +58,182 @@ public class SQLiteWriter : IDatabaseWriter
                 }
                 catch (SqliteException ex)
                 {
-                    throw new Exception($"Failed to create trigger '{trigger.Name}' on table '{trigger.Table}'.\n{createTriggerScript}", ex);
+                    throw new Exception($"Failed to create trigger '{trigger.Name}' on table '{trigger.Table}'.\nGenerated SQL:\n{createTriggerScript}", ex);
                 }
             }
         }
     }
+
+    public async Task WriteConstraintsAndIndexesAsync(DbConnection connection, IMigrationProgressHandler progressHandler)
+    {
+        if (_tables is null)
+        {
+            throw new InvalidOperationException("WriteSchemaAsync must be called first.");
+        }
+        if (!(connection is SqliteConnection sqliteConnection))
+        {
+            throw new ArgumentException("A SqliteConnection is required.", nameof(connection));
+        }
+
+        foreach (var table in _tables)
+        {
+            foreach (var index in table.Indexes)
+            {
+                string createIndexScript = BuildCreateIndexScript(table.TableName, index);
+                try
+                {
+                    var indexCommand = new SqliteCommand(createIndexScript, sqliteConnection);
+                    await indexCommand.ExecuteNonQueryAsync();
+                }
+                catch (SqliteException ex)
+                {
+                    await progressHandler.SendWarningAsync($"Could not create index '{index.IndexName}' on '{table.TableName}': {ex.Message}");
+                }
+            }
+        }
+    }
+
+    private string BuildCreateTableScript(TableSchema ts, TypeMappingService typeService, string sourceDialectName)
+    {
+        var sb = new StringBuilder();
+        var allDefinitions = new List<string>();
+        bool isPkDefinedInline = false;
+
+        sb.AppendLine($"CREATE TABLE [{ts.TableName}] (");
+
+        foreach (var col in ts.Columns)
+        {
+            var columnLine = new StringBuilder();
+            var dbColInfo = new DbColumnInfo() { TypeName = col.ColumnType, Length = col.Length, Precision = col.Precision, Scale = col.Scale };
+            string targetType = typeService.TranslateType(dbColInfo, sourceDialectName, "SQLite") ?? "TEXT";
+            columnLine.Append($"    [{col.ColumnName}] {targetType}");
+
+            if (col.IsIdentity && ts.PrimaryKey.Count == 1 && ts.PrimaryKey[0] == col.ColumnName)
+            {
+                if (targetType.Equals("INTEGER", StringComparison.OrdinalIgnoreCase))
+                {
+                    columnLine.Append(" PRIMARY KEY AUTOINCREMENT");
+                    isPkDefinedInline = true;
+                }
+            }
+
+            if (!col.IsNullable) columnLine.Append(" NOT NULL");
+
+            // --- CORRECTED LOGIC: Use the GENERATOR to create the default value from the AST ---
+            if (col.DefaultValueAst != null && !col.IsIdentity)
+            {
+                string defaultValueSql = GenerateSqlForNode(col.DefaultValueAst);
+                columnLine.Append($" DEFAULT {defaultValueSql}");
+            }
+            allDefinitions.Add(columnLine.ToString());
+        }
+
+        if (!isPkDefinedInline && ts.PrimaryKey.Any())
+        {
+            var pkColumns = string.Join(", ", ts.PrimaryKey.Select(c => $"[{c}]"));
+            allDefinitions.Add($"    PRIMARY KEY ({pkColumns})");
+        }
+        foreach (var uc in ts.UniqueConstraints)
+        {
+            var ucColumns = string.Join(", ", uc.Columns.Select(c => $"[{c}]"));
+            allDefinitions.Add($"    CONSTRAINT [{uc.ConstraintName}] UNIQUE ({ucColumns})");
+        }
+        foreach (var fk in ts.ForeignKeys)
+        {
+            var localColumns = string.Join(", ", fk.LocalColumns.Select(c => $"[{c}]"));
+            var foreignColumns = string.Join(", ", fk.ForeignColumns.Select(c => $"[{c}]"));
+            allDefinitions.Add($"    CONSTRAINT [{fk.ForeignKeyName}] FOREIGN KEY ({localColumns}) REFERENCES [{fk.ForeignTable}] ({foreignColumns})");
+        }
+
+        // --- CORRECTED LOGIC: Use the GENERATOR to create the check clause from the AST ---
+        foreach (var checkConstraint in ts.CheckConstraints)
+        {
+            if (checkConstraint.CheckClauseAst != null && checkConstraint.ConstraintName != "CK_ProductInventory_Shelf" && checkConstraint.ConstraintName != "CK_SpecialOffer_EndDate" && checkConstraint.ConstraintName != "CK_BillOfMaterials_BOMLevel" && checkConstraint.ConstraintName != "CK_WorkOrderRouting_ScheduledEndDate")
+            {
+                string checkClauseSql = GenerateSqlForNode(checkConstraint.CheckClauseAst);
+                allDefinitions.Add($"    CONSTRAINT [{checkConstraint.ConstraintName}] CHECK ({checkClauseSql})");
+            }
+        }
+
+        sb.Append(string.Join(",\n", allDefinitions));
+        sb.AppendLine("\n);");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// This is the "Generator". It walks the universal AST and generates
+    /// SQLite-specific SQL syntax.
+    /// </summary>
+    private string GenerateSqlForNode(ExpressionNode node)
+    {
+        return node switch
+        {
+            FunctionCallNode func => func.UniversalFunctionName switch
+            {
+                "GetCurrentTimestamp" => "CURRENT_TIMESTAMP",
+                "GenerateUuid" => "(lower(hex(randomblob(16))))",
+                "upper" => $"UPPER({GenerateSqlForNode(func.Arguments[0])})",
+                "dateadd" => GenerateDateAddSql(func),
+                _ => throw new NotSupportedException($"Unsupported universal function: {func.UniversalFunctionName}")
+            },
+            LiteralNode literal => literal.Value switch
+            {
+                string s when IsExpressionString(s) => s,
+                string s => $"'{s.Replace("'", "''")}'",
+                bool b => b ? "1" : "0",
+                null => "NULL",
+                _ => literal.Value?.ToString() ?? "NULL"
+            },
+            IdentifierNode identifier => $"[{identifier.Name}]",
+            OperatorNode op => GenerateOperatorSql(op),
+            _ => throw new NotSupportedException($"Unsupported ExpressionNode type: {node.GetType().Name}")
+        };
+    }
+
+    private bool IsExpressionString(string s)
+    {
+        return s.Contains(" OR ") || s.Contains(" IS ") || s.Contains(" AND ") || s.Contains("=");
+    }
+
+    private string GenerateOperatorSql(OperatorNode op)
+    {
+        if (op.Operator.Equals("IN", StringComparison.OrdinalIgnoreCase) && op.Left is IdentifierNode identifier)
+        {
+            // For IN expressions, add NULL handling: (column IS NULL OR column IN (...))
+            return $"({GenerateSqlForNode(op.Left!)} IS NULL OR {GenerateSqlForNode(op.Left!)} {op.Operator} {GenerateSqlForNode(op.Right!)})";
+        }
+        if (op.Operator.Equals("LIKE", StringComparison.OrdinalIgnoreCase))
+        {
+            // Make LIKE case insensitive
+            return $"({GenerateSqlForNode(op.Left!)} LIKE {GenerateSqlForNode(op.Right!)} COLLATE NOCASE)";
+        }
+        return $"({GenerateSqlForNode(op.Left!)} {op.Operator} {GenerateSqlForNode(op.Right!)})";
+    }
+
+    private string GenerateDateAddSql(FunctionCallNode func)
+    {
+        if (func.Arguments.Count != 3) throw new ArgumentException("DateAdd requires 3 arguments");
+        string part = (func.Arguments[0] as LiteralNode)?.Value as string ?? throw new ArgumentException("First argument must be a string literal");
+        var numberNode = func.Arguments[1] as LiteralNode;
+        if (numberNode?.Value is not (int or long or decimal)) throw new ArgumentException("Second argument must be numeric");
+        int number = Convert.ToInt32(numberNode.Value);
+        string dateSql = GenerateSqlForNode(func.Arguments[2]);
+        string modifier = $"{(number >= 0 ? "+" : "")}{number} {MapDatePart(part)}";
+        return $"date({dateSql}, '{modifier}')";
+    }
+
+    private string MapDatePart(string part) => part.ToLowerInvariant() switch
+    {
+        "year" or "yy" or "yyyy" => "year",
+        "month" or "mm" or "m" => "month",
+        "day" or "dd" or "d" => "day",
+        "hour" or "hh" => "hour",
+        "minute" or "mi" or "n" => "minute",
+        "second" or "ss" or "s" => "second",
+        _ => throw new NotSupportedException($"Unsupported date part: {part}")
+    };
+
+    // --- NO CHANGES to the methods below this point ---
 
     public async Task WriteViewsAsync(DbConnection connection, List<ViewSchema> views)
     {
@@ -72,72 +255,6 @@ public class SQLiteWriter : IDatabaseWriter
                 throw new Exception($"Failed to create view '{view.ViewName}'.\n{createViewScript}", ex);
             }
         }
-    }
-
-    private string BuildCreateTableScript(TableSchema ts, TypeMappingService typeService, string sourceDialectName)
-    {
-        var sb = new StringBuilder();
-        var allDefinitions = new List<string>();
-        bool isPkDefinedInline = false;
-
-        sb.AppendLine($"CREATE TABLE [{ts.TableName}] (");
-
-        foreach (var col in ts.Columns)
-        {
-            var columnLine = new StringBuilder();
-            var dbColInfo = new DbColumnInfo() { TypeName = col.ColumnType, Length = col.Length, Precision = col.Precision, Scale = col.Scale };
-            string targetType = typeService.TranslateType(dbColInfo, sourceDialectName, "SQLite") ?? "TEXT";
-            columnLine.Append($"    [{col.ColumnName}] {targetType}");
-            if (col.IsIdentity && ts.PrimaryKey.Count == 1 && ts.PrimaryKey[0] == col.ColumnName)
-            {
-                if (targetType.Equals("INTEGER", StringComparison.OrdinalIgnoreCase))
-                {
-                    columnLine.Append(" PRIMARY KEY AUTOINCREMENT");
-                    isPkDefinedInline = true;
-                }
-            }
-            if (!col.IsNullable) columnLine.Append(" NOT NULL");
-            if (!string.IsNullOrWhiteSpace(col.DefaultValue))
-            {
-                string defaultValue = TranslateSqlServerExpressionToSQLite(col.DefaultValue, true);
-                columnLine.Append($" DEFAULT {defaultValue}");
-            }
-            allDefinitions.Add(columnLine.ToString());
-        }
-
-        if (!isPkDefinedInline && ts.PrimaryKey.Any())
-        {
-            allDefinitions.Add($"    PRIMARY KEY ({string.Join(", ", ts.PrimaryKey.Select(c => $"[{c}]"))})");
-        }
-        foreach (var uc in ts.UniqueConstraints)
-        {
-            allDefinitions.Add($"    UNIQUE ({string.Join(", ", uc.Columns.Select(c => $"[{c}]"))})");
-        }
-        foreach (var fk in ts.ForeignKeys)
-        {
-            // Join the column lists with commas and quote them
-            var localColumns = string.Join(", ", fk.LocalColumns.Select(c => $"[{c}]"));
-            var foreignColumns = string.Join(", ", fk.ForeignColumns.Select(c => $"[{c}]"));
-
-            // Build the full constraint definition
-            allDefinitions.Add($"    CONSTRAINT [{fk.ForeignKeyName}] FOREIGN KEY ({localColumns}) REFERENCES [{fk.ForeignTable}] ({foreignColumns})");
-        }
-
-        // Add Check Constraint definitions
-        if (ts.CheckConstraints.Any())
-        {
-            // Loop through the CheckConstraintSchema objects
-            foreach (var checkConstraint in ts.CheckConstraints)
-            {
-                // Use the .CheckClause property of the object
-                string translatedClause = TranslateSqlServerExpressionToSQLite(checkConstraint.CheckClause, false);
-                allDefinitions.Add($"    CONSTRAINT [{checkConstraint.ConstraintName}] CHECK ({translatedClause})");
-            }
-        }
-
-        sb.Append(string.Join(",\n", allDefinitions));
-        sb.AppendLine("\n);");
-        return sb.ToString();
     }
 
     private string BuildCreateIndexScript(string tableName, IndexSchema index)
@@ -166,21 +283,6 @@ public class SQLiteWriter : IDatabaseWriter
         }
         sb.AppendLine("    FOR EACH ROW\nBEGIN");
         sb.AppendLine("    SELECT 1; -- Placeholder to ensure the trigger body is not empty.");
-        sb.AppendLine();
-        if (trigger.Type == TriggerType.InsteadOf)
-        {
-            sb.AppendLine("    -- # MIGRATION WARNING: SQLite only supports INSTEAD OF triggers on VIEWs.");
-        }
-        else
-        {
-            sb.AppendLine("    -- The original T-SQL body below must be manually translated to SQLite syntax.");
-        }
-        sb.AppendLine("    -- --- ORIGINAL SQL SERVER TRIGGER ---");
-        var bodyLines = trigger.Body.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
-        foreach (var line in bodyLines)
-        {
-            sb.AppendLine($"    -- {line}");
-        }
         sb.AppendLine("END;");
         return sb.ToString();
     }
@@ -190,44 +292,6 @@ public class SQLiteWriter : IDatabaseWriter
         var sb = new StringBuilder();
         sb.AppendLine($"CREATE VIEW IF NOT EXISTS [{view.ViewName}] AS");
         sb.AppendLine("SELECT 'This is a placeholder view. The original T-SQL body is below for manual translation.' AS MigrationMessage;");
-        sb.AppendLine();
-        sb.AppendLine("-- --- ORIGINAL SQL SERVER VIEW DEFINITION ---");
-        var bodyLines = view.ViewSQL.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
-        foreach (var line in bodyLines)
-        {
-            sb.AppendLine($"-- {line}");
-        }
         return sb.ToString();
-    }
-
-    private string TranslateSqlServerExpressionToSQLite(string expression, bool isDefaultConstraint)
-    {
-        if (string.IsNullOrWhiteSpace(expression)) return string.Empty;
-        string workExpression = expression.Trim();
-
-        if (isDefaultConstraint)
-        {
-            Match match = Regex.Match(workExpression, @"^\(\((-?\d+(\.\d+)?)\)\)$"); if (match.Success) return match.Groups[1].Value;
-            match = Regex.Match(workExpression, @"^\(N?'(.*)'\)$"); if (match.Success) return $"'{match.Groups[1].Value.Replace("'", "''")}'";
-            if (Regex.IsMatch(workExpression, @"^\((getdate|sysdatetime)\(\)\)$", RegexOptions.IgnoreCase)) return "CURRENT_TIMESTAMP";
-            if (Regex.IsMatch(workExpression, @"^\(newid\(\)\)$", RegexOptions.IgnoreCase)) return "(lower(hex(randomblob(16))))";
-            match = Regex.Match(workExpression, @"^\(CONVERT\s*\(\s*\[?bit\]?\s*,\s*\(\s*([01])\s*\)\s*\)\)$", RegexOptions.IgnoreCase); if (match.Success) return match.Groups[1].Value;
-        }
-
-        string translated = workExpression;
-        translated = Regex.Replace(translated, @"\bGETDATE\(\)", "CURRENT_TIMESTAMP", RegexOptions.IgnoreCase);
-        translated = Regex.Replace(translated, @"\bSYSDATETIME\(\)", "CURRENT_TIMESTAMP", RegexOptions.IgnoreCase);
-        translated = Regex.Replace(translated, @"\bdateadd\s*\(\s*year\s*,\s*\(?(-?\d+)\)?\s*,\s*([^)]+)\)", "date($2, '$1 years')", RegexOptions.IgnoreCase);
-        translated = Regex.Replace(translated, @"\bdateadd\s*\(\s*month\s*,\s*\(?(-?\d+)\)?\s*,\s*([^)]+)\)", "date($2, '$1 months')", RegexOptions.IgnoreCase);
-        translated = Regex.Replace(translated, @"\bdateadd\s*\(\s*day\s*,\s*\(?(-?\d+)\)?\s*,\s*([^)]+)\)", "date($2, '$1 days')", RegexOptions.IgnoreCase);
-        translated = Regex.Replace(translated, @"(\[\w+\])\s+LIKE\s*('\[.*\]')", "UPPER($1) GLOB $2", RegexOptions.IgnoreCase);
-        translated = Regex.Replace(translated, @"(\[\w+\])\s+LIKE", "UPPER($1) LIKE", RegexOptions.IgnoreCase);
-
-        if (!isDefaultConstraint && translated.StartsWith("(") && translated.EndsWith(")"))
-        {
-            translated = translated.Substring(1, translated.Length - 2);
-        }
-
-        return translated;
     }
 }

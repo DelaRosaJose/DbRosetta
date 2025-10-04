@@ -8,10 +8,12 @@ using Microsoft.AspNetCore.SignalR;
 public class MigrationController : ControllerBase
 {
     private readonly IHubContext<MigrationHub> _hubContext;
+    private readonly MigrationService _migrationService;
 
-    public MigrationController(IHubContext<MigrationHub> hubContext)
+    public MigrationController(IHubContext<MigrationHub> hubContext, MigrationService migrationService)
     {
         _hubContext = hubContext;
+        _migrationService = migrationService;
     }
 
     [HttpPost("start")]
@@ -25,13 +27,10 @@ public class MigrationController : ControllerBase
             // Create the handler that knows how to talk to the client
             var progressHandler = new SignalRProgressHandler(_hubContext);
 
-            // Create the core migration engine
-            var migrationService = new MigrationService(progressHandler);
-
             try
             {
-                // Await the entire migration process
-                await migrationService.ExecuteAsync(request);
+                // Await the entire migration process using the injected service
+                await _migrationService.ExecuteAsync(request);
             }
             catch (Exception ex)
             {
