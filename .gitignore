@@ -29,3 +29,6 @@ bld/
 .vs/
 *.csproj.user
 *.vcxproj.user
+
+#Outputs
+Output/
