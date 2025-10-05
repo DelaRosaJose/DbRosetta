@@ -17,7 +17,7 @@ namespace DbRosetta.Core.Services
     {
         private readonly DatabaseProviderFactory _factory;
         private readonly ILogger<DataMigratorService> _logger;
-        private const int DefaultBatchSize = 1000;
+        private const int DefaultBatchSize = 10000;
         private const int SQLiteBatchSize = 10000;
         private const int ProgressReportBatchSize = 500;
 

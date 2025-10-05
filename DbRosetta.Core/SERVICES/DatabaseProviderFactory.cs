@@ -44,7 +44,7 @@ namespace DbRosetta.Core.Services
             return engine switch
             {
                 DatabaseEngine.SqlServer => new SqlServerDataWriter(),
-                DatabaseEngine.PostgreSql => new PostgreSqlDataWriter(),
+                DatabaseEngine.PostgreSql => new PostgreSqlDataWriter(NullLogger<PostgreSqlDataWriter>.Instance),
                 DatabaseEngine.SQLite => new SQLiteDataWriter(NullLogger<SQLiteDataWriter>.Instance),
                 DatabaseEngine.MySQL => new MySqlDataWriter(), // Example: Add MySQL support
                 _ => throw new NotSupportedException($"Data writer for {engine} is not supported.")

@@ -89,8 +89,21 @@ public class PostgreSqlWriter : IDatabaseSchemaWriter
             // USE THE GENERATOR to create the default value from the AST
             if (col.DefaultValueAst != null && !col.IsIdentity)
             {
-                string defaultValueSql = GenerateSqlForNode(col.DefaultValueAst);
-                columnLine.Append($" DEFAULT {defaultValueSql}");
+                try
+                {
+                    string defaultValueSql = GenerateSqlForNode(col.DefaultValueAst);
+                    // Fix boolean defaults: PostgreSQL expects 'true'/'false', not '1'/'0'
+                    if (targetType.Equals("BOOLEAN", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (defaultValueSql == "1") defaultValueSql = "true";
+                        else if (defaultValueSql == "0") defaultValueSql = "false";
+                    }
+                    columnLine.Append($" DEFAULT {defaultValueSql}");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Warning: Could not generate SQL for default value of column {col.ColumnName} in table {ts.TableName}: {ex.Message}");
+                }
             }
             allDefinitions.Add(columnLine.ToString());
         }
@@ -167,6 +180,14 @@ public class PostgreSqlWriter : IDatabaseSchemaWriter
 
             foreach (var index in table.Indexes)
             {
+                // Skip indexes on XML columns as PostgreSQL does not support btree indexes on XML
+                bool hasXmlColumn = index.Columns.Any(ic => table.Columns.Any(c => c.ColumnName == ic.ColumnName && c.ColumnType.ToLower().Contains("xml")));
+                if (hasXmlColumn)
+                {
+                    await progressHandler.SendWarningAsync($"Skipping index '{index.IndexName}' on '{table.TableName}' as it includes XML columns, which are not supported in PostgreSQL btree indexes.");
+                    continue;
+                }
+
                 string createIndexScript = BuildCreateIndexScript(table.TableName, index);
                 try
                 {
@@ -176,7 +197,26 @@ public class PostgreSqlWriter : IDatabaseSchemaWriter
                 }
                 catch (NpgsqlException ex)
                 {
-                    await progressHandler.SendWarningAsync($"Could not create index '{index.IndexName}' on '{table.TableName}': {ex.Message}");
+                    if (ex.Message.Contains("exceeds maximum"))
+                    {
+                        // Try creating a hash index instead for large keys
+                        string hashIndexScript = BuildCreateHashIndexScript(table.TableName, index);
+                        try
+                        {
+                            var hashIndexCommand = npgsqlConnection.CreateCommand();
+                            hashIndexCommand.CommandText = hashIndexScript;
+                            await hashIndexCommand.ExecuteNonQueryAsync();
+                            await progressHandler.SendWarningAsync($"Created hash index '{index.IndexName}' on '{table.TableName}' instead of btree due to key size exceeding limit.");
+                        }
+                        catch (NpgsqlException hashEx)
+                        {
+                            await progressHandler.SendWarningAsync($"Could not create hash index '{index.IndexName}' on '{table.TableName}': {hashEx.Message}");
+                        }
+                    }
+                    else
+                    {
+                        await progressHandler.SendWarningAsync($"Could not create index '{index.IndexName}' on '{table.TableName}': {ex.Message}");
+                    }
                 }
             }
         }
@@ -184,14 +224,33 @@ public class PostgreSqlWriter : IDatabaseSchemaWriter
 
     private string BuildAddCheckConstraintScript(string tableName, CheckConstraintSchema chk)
     {
-        if (chk.CheckClauseAst == null)
+        // Preprocess the check expression to replace SQL Server brackets with PostgreSQL quotes
+        string processedCheckExpression = chk.CheckClauseAsString.Replace("[", "\"").Replace("]", "\"");
+
+        if (chk.CheckClauseAst != null)
         {
-            // Cannot create a constraint without a definition.
-            return string.Empty;
+            try
+            {
+                // Try to use the AST-generated expression
+                string translatedExpression = GenerateSqlForNode(chk.CheckClauseAst);
+                // If the translated expression still contains brackets, fall back to processed
+                if (translatedExpression.Contains("[") || translatedExpression.Contains("]"))
+                {
+                    return $"ALTER TABLE \"{tableName}\" ADD CONSTRAINT \"{chk.ConstraintName}\" CHECK ({processedCheckExpression});";
+                }
+                return $"ALTER TABLE \"{tableName}\" ADD CONSTRAINT \"{chk.ConstraintName}\" CHECK ({translatedExpression});";
+            }
+            catch
+            {
+                // Fall back to processed expression if AST generation fails
+                return $"ALTER TABLE \"{tableName}\" ADD CONSTRAINT \"{chk.ConstraintName}\" CHECK ({processedCheckExpression});";
+            }
         }
-        // USE THE GENERATOR to create the check clause from the AST
-        string translatedExpression = GenerateSqlForNode(chk.CheckClauseAst);
-        return $"ALTER TABLE \"{tableName}\" ADD CONSTRAINT \"{chk.ConstraintName}\" CHECK ({translatedExpression});";
+        else
+        {
+            // Use the processed raw expression
+            return $"ALTER TABLE \"{tableName}\" ADD CONSTRAINT \"{chk.ConstraintName}\" CHECK ({processedCheckExpression});";
+        }
     }
 
     /// <summary>
@@ -206,22 +265,66 @@ public class PostgreSqlWriter : IDatabaseSchemaWriter
             {
                 "GetCurrentTimestamp" => "NOW()",
                 "GenerateUuid" => "gen_random_uuid()",
+                "upper" => $"UPPER({GenerateSqlForNode(func.Arguments[0])})",
+                "dateadd" => GenerateDateAddSql(func),
                 _ => throw new NotSupportedException($"Unsupported universal function: {func.UniversalFunctionName}")
             },
             LiteralNode literal => literal.Value switch
             {
+                string s when IsExpressionString(s) => s,
                 string s => $"'{s.Replace("'", "''")}'",
                 bool b => b ? "true" : "false",
                 null => "NULL",
-                // Handle raw string fallbacks from a simple parser
-                var val when val is string => val.ToString()!,
                 _ => literal.Value?.ToString() ?? "NULL"
             },
-            IdentifierNode identifier => $"\"{identifier.Name}\"", // PostgreSQL uses double quotes
-            OperatorNode op => $"({GenerateSqlForNode(op.Left!)} {op.Operator} {GenerateSqlForNode(op.Right!)})",
+            IdentifierNode identifier => $"\"{identifier.Name.Trim('[', ']')}\"", // PostgreSQL uses double quotes, strip SQL Server brackets
+            OperatorNode op => GenerateOperatorSql(op),
             _ => throw new NotSupportedException($"Unsupported ExpressionNode type: {node.GetType().Name}")
         };
     }
+
+    private bool IsExpressionString(string s)
+    {
+        return s.Contains(" OR ") || s.Contains(" IS ") || s.Contains(" AND ") || s.Contains("=");
+    }
+
+    private string GenerateOperatorSql(OperatorNode op)
+    {
+        if (op.Operator.Equals("IN", StringComparison.OrdinalIgnoreCase) && op.Left is IdentifierNode identifier)
+        {
+            // For IN expressions, add NULL handling: (column IS NULL OR column IN (...))
+            return $"({GenerateSqlForNode(op.Left!)} IS NULL OR {GenerateSqlForNode(op.Left!)} {op.Operator} {GenerateSqlForNode(op.Right!)})";
+        }
+        if (op.Operator.Equals("LIKE", StringComparison.OrdinalIgnoreCase))
+        {
+            // Make LIKE case insensitive
+            return $"({GenerateSqlForNode(op.Left!)} ILIKE {GenerateSqlForNode(op.Right!)})";
+        }
+        return $"({GenerateSqlForNode(op.Left!)} {op.Operator} {GenerateSqlForNode(op.Right!)})";
+    }
+
+    private string GenerateDateAddSql(FunctionCallNode func)
+    {
+        if (func.Arguments.Count != 3) throw new ArgumentException("DateAdd requires 3 arguments");
+        string part = (func.Arguments[0] as LiteralNode)?.Value as string ?? throw new ArgumentException("First argument must be a string literal");
+        var numberNode = func.Arguments[1] as LiteralNode;
+        if (numberNode?.Value is not (int or long or decimal)) throw new ArgumentException("Second argument must be numeric");
+        int number = Convert.ToInt32(numberNode.Value);
+        string dateSql = GenerateSqlForNode(func.Arguments[2]);
+        string interval = $"{(number >= 0 ? "+" : "")}{Math.Abs(number)} {MapDatePart(part)}";
+        return $"({dateSql} + INTERVAL '{interval}')";
+    }
+
+    private string MapDatePart(string part) => part.ToLowerInvariant() switch
+    {
+        "year" or "yy" or "yyyy" => "year",
+        "month" or "mm" or "m" => "month",
+        "day" or "dd" or "d" => "day",
+        "hour" or "hh" => "hour",
+        "minute" or "mi" or "n" => "minute",
+        "second" or "ss" or "s" => "second",
+        _ => throw new NotSupportedException($"Unsupported date part: {part}")
+    };
 
     // --- NO CHANGES to the methods below this point ---
 
@@ -269,6 +372,21 @@ public class PostgreSqlWriter : IDatabaseSchemaWriter
         }
         sb.Append($"INDEX \"{index.IndexName}\" ON \"{tableName}\" (");
         sb.Append(string.Join(", ", index.Columns.Select(c => $"\"{c.ColumnName}\"" + (c.IsAscending ? " ASC" : " DESC"))));
+        sb.Append(");");
+        return sb.ToString();
+    }
+
+    private string BuildCreateHashIndexScript(string tableName, IndexSchema index)
+    {
+        var sb = new StringBuilder();
+        sb.Append("CREATE ");
+        if (index.IsUnique)
+        {
+            sb.Append("UNIQUE ");
+        }
+        sb.Append($"INDEX \"{index.IndexName}\" ON \"{tableName}\" USING HASH (");
+        // Hash indexes don't support ASC/DESC, and typically for single columns, but allow multiple
+        sb.Append(string.Join(", ", index.Columns.Select(c => $"\"{c.ColumnName}\"")));
         sb.Append(");");
         return sb.ToString();
     }
