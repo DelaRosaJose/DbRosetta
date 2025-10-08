@@ -1,46 +1,76 @@
-﻿using DbRosetta.Core; // <-- You already added the reference, so this works
+﻿using DbRosetta.Core;
 
 /// <summary>
-/// Implements the progress handler contract by writing messages to the console.
+/// A concrete implementation of the progress handler interface that writes
+/// all migration status updates directly to the console window.
 /// </summary>
 public class ConsoleProgressHandler : IMigrationProgressHandler
 {
+    private static readonly object _lock = new object();
+
     public Task SendLogAsync(string message)
     {
-        Console.WriteLine(message);
+        lock (_lock)
+        {
+            Console.ForegroundColor = ConsoleColor.White;
+            Console.WriteLine(message);
+            Console.ResetColor();
+        }
         return Task.CompletedTask;
     }
 
     public Task SendWarningAsync(string message)
     {
-        Console.ForegroundColor = ConsoleColor.Yellow;
-        Console.WriteLine(message);
-        Console.ResetColor();
+        lock (_lock)
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine($"? WARNING: {message}");
+            Console.ResetColor();
+        }
         return Task.CompletedTask;
     }
 
     public Task SendProgressAsync(string tableName, int rows)
     {
-        // Use carriage return to create the "live update" effect on a single line
-        Console.Write($"\r  -> Migrating {tableName}: {rows} rows transferred...");
+        // This uses a carriage return to show progress on a single line
+        lock (_lock)
+        {
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.WriteLine($"  -> Migrating {tableName}: {rows} rows transferred...\r");
+            Console.ResetColor();
+        }
         return Task.CompletedTask;
     }
 
     public Task SendSuccessAsync(string message)
     {
-        Console.ForegroundColor = ConsoleColor.Green;
-        Console.WriteLine(message);
-        Console.ResetColor();
+        lock (_lock)
+        {
+            Console.WriteLine(); // New line after progress updates
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine(message);
+            Console.ResetColor();
+        }
         return Task.CompletedTask;
     }
 
     public Task SendFailureAsync(string errorMessage, string? stackTrace = null)
     {
-        Console.ForegroundColor = ConsoleColor.Red;
-        Console.WriteLine($"\n❌ Migration Failed: {errorMessage}");
-        // Optionally print the stack trace for debugging
-        // Console.WriteLine(stackTrace); 
-        Console.ResetColor();
+        lock (_lock)
+        {
+            Console.WriteLine(); // New line after any progress updates
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"? MIGRATION FAILED: {errorMessage}");
+            Console.ResetColor();
+
+            if (!string.IsNullOrWhiteSpace(stackTrace))
+            {
+                Console.ForegroundColor = ConsoleColor.Gray;
+                Console.WriteLine("\n--- Stack Trace ---");
+                Console.WriteLine(stackTrace);
+                Console.ResetColor();
+            }
+        }
         return Task.CompletedTask;
     }
 }

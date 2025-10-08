@@ -18,5 +18,6 @@ public enum DatabaseEngine
 {
     SqlServer,
     SQLite,
-    PostgreSql
+    PostgreSql,
+    MySQL
 }
