@@ -1,12 +1,28 @@
 using DbRosetta.Core.Interfaces;
 using DbRosetta.Core.Reading;
 using DbRosetta.Core.Writers;
+using Microsoft.Data.SqlClient;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
+using Npgsql;
+using System.Data.Common;
 
 namespace DbRosetta.Core.Services
 {
     public class DatabaseProviderFactory
     {
+
+        public DbConnection GetConnection(DatabaseEngine engine, string connectionString)
+        {
+            return engine switch
+            {
+                DatabaseEngine.SqlServer => new SqlConnection(connectionString),
+                DatabaseEngine.PostgreSql => new NpgsqlConnection(connectionString),
+                DatabaseEngine.SQLite => new SqliteConnection($"Data Source={connectionString}"),
+                _ => throw new NotSupportedException($"Connection for {engine} is not supported.")
+            };
+        }
+
         public IDatabaseSchemaReader GetSchemaReader(DatabaseEngine engine)
         {
             return engine switch

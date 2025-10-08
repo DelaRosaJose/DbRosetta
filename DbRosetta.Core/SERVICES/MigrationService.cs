@@ -33,8 +33,10 @@ namespace DbRosetta.Core.Services
                 throw new ArgumentException("Destination connection string must be provided.", nameof(request.DestinationConnectionString));
 
             // --- SOURCE SETUP ---
-            DbConnection sourceConnection;
             var schemaReader = _factory.GetSchemaReader(request.SourceDialect);
+            DbConnection sourceConnection = _factory.GetConnection(request.SourceDialect, request.SourceConnectionString);
+
+
             switch (request.SourceDialect)
             {
                 case DatabaseEngine.SqlServer:
