@@ -1,5 +1,3 @@
-using System.Collections.Generic;
-
 namespace DbRosetta.Core.Models
 {
     /// <summary>

@@ -1,10 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-
-namespace DbRosetta.Core.Reading
+﻿namespace DbRosetta.Core.Reading
 {
     internal class IDatabaseSchemaReader
     {

@@ -1,5 +1,4 @@
-﻿using DbRosetta.Core.Models;
-using System.Data.Common;
+﻿using System.Data.Common;
 
 namespace DbRosetta.Core.Interfaces
 {

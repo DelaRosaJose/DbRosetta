@@ -1,6 +1,4 @@
 ﻿using DbRosetta.Core;
-using System;
-using System.Threading.Tasks;
 
 /// <summary>
 /// A concrete implementation of the progress handler interface that writes

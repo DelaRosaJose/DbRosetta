@@ -2,9 +2,7 @@ using DbRosetta.Core.Interfaces;
 using DbRosetta.Core.Models;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
-using System.Collections.Generic;
 using System.Data.Common;
-using System.Linq;
 
 namespace DbRosetta.Core.Writers
 {

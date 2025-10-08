@@ -2,12 +2,8 @@ using DbRosetta.Core.Interfaces;
 using DbRosetta.Core.Models;
 using Microsoft.Extensions.Logging;
 using Npgsql;
-using System.Collections.Generic;
 using System.Data.Common;
 using System.Diagnostics;
-using System.Globalization;
-using System.Linq;
-using System.Threading.Tasks;
 
 namespace DbRosetta.Core.Writers
 {

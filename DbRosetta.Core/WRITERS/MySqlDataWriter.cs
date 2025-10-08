@@ -1,6 +1,5 @@
 using DbRosetta.Core.Interfaces;
 using DbRosetta.Core.Models;
-using System.Collections.Generic;
 using System.Data.Common;
 
 namespace DbRosetta.Core.Writers
