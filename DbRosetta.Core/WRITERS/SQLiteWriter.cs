@@ -12,6 +12,7 @@ public class SQLiteWriter : IDatabaseSchemaWriter
 {
     // This writer is now self-contained and has no external dependencies for expression translation.
     private List<TableSchema>? _tables;
+    private Dictionary<string, string>? _originalPragmaSettings;
     public SQLiteWriter() { }
 
     public async Task WriteSchemaAsync(DbConnection connection, List<TableSchema> tables, TypeMappingService typeService, string sourceDialectName)
@@ -90,6 +91,64 @@ public class SQLiteWriter : IDatabaseSchemaWriter
                     await progressHandler.SendWarningAsync($"Could not create index '{index.IndexName}' on '{table.TableName}': {ex.Message}");
                 }
             }
+        }
+    }
+
+    public async Task PreMigrationAsync(DbConnection connection, IMigrationProgressHandler progressHandler)
+    {
+        if (!(connection is SqliteConnection sqliteConnection))
+        {
+            throw new ArgumentException("A SqliteConnection is required.", nameof(connection));
+        }
+
+        _originalPragmaSettings = new Dictionary<string, string>();
+
+        // Store original PRAGMA values
+        var pragmas = new[] { "foreign_keys", "journal_mode", "synchronous", "cache_size" };
+        foreach (var pragma in pragmas)
+        {
+            using var command = sqliteConnection.CreateCommand();
+            command.CommandText = $"PRAGMA {pragma}";
+            var result = await command.ExecuteScalarAsync();
+            _originalPragmaSettings[pragma] = result?.ToString() ?? "";
+        }
+
+        // Apply performance optimizations
+        await progressHandler.SendLogAsync("Applying SQLite performance optimizations...");
+        var optimizations = new Dictionary<string, string>
+        {
+            ["foreign_keys"] = "OFF",
+            ["journal_mode"] = "WAL",
+            ["synchronous"] = "OFF",
+            ["cache_size"] = "10000"
+        };
+
+        foreach (var kvp in optimizations)
+        {
+            using var command = sqliteConnection.CreateCommand();
+            command.CommandText = $"PRAGMA {kvp.Key}={kvp.Value}";
+            await command.ExecuteNonQueryAsync();
+        }
+    }
+
+    public async Task PostMigrationAsync(DbConnection connection, IMigrationProgressHandler progressHandler)
+    {
+        if (!(connection is SqliteConnection sqliteConnection))
+        {
+            throw new ArgumentException("A SqliteConnection is required.", nameof(connection));
+        }
+
+        if (_originalPragmaSettings == null)
+        {
+            return; // No optimizations were applied
+        }
+
+        await progressHandler.SendLogAsync("Reverting SQLite optimizations...");
+        foreach (var kvp in _originalPragmaSettings)
+        {
+            using var command = sqliteConnection.CreateCommand();
+            command.CommandText = $"PRAGMA {kvp.Key}={kvp.Value}";
+            await command.ExecuteNonQueryAsync();
         }
     }
 

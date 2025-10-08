@@ -24,4 +24,24 @@ public interface IDatabaseSchemaWriter
         // Default implementation does nothing, so existing writers don't need to change.
         return Task.CompletedTask;
     }
+
+    /// <summary>
+    /// Performs any database-specific optimizations or preparations before data migration.
+    /// This is an optional method for writers that need pre-migration setup.
+    /// </summary>
+    Task PreMigrationAsync(DbConnection connection, IMigrationProgressHandler progressHandler)
+    {
+        // Default implementation does nothing.
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Reverts any database-specific optimizations or performs cleanup after data migration.
+    /// This is an optional method for writers that need post-migration cleanup.
+    /// </summary>
+    Task PostMigrationAsync(DbConnection connection, IMigrationProgressHandler progressHandler)
+    {
+        // Default implementation does nothing.
+        return Task.CompletedTask;
+    }
 }

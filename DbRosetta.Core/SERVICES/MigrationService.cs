@@ -111,13 +111,8 @@ namespace DbRosetta.Core.Services
                 // [PHASE 2] Migrate Data
                 await _progressHandler.SendLogAsync("\n[Phase 2/3] Migrating data...");
 
-                // Apply SQLite optimizations before data migration
-                var originalPragmaSettings = new Dictionary<string, string>();
-                if (request.DestinationDialect == DatabaseEngine.SQLite && destConn is SqliteConnection sqliteConn)
-                {
-                    await _progressHandler.SendLogAsync("Applying SQLite performance optimizations...");
-                    originalPragmaSettings = await ApplySQLiteOptimizationsAsync(sqliteConn);
-                }
+                // Apply database-specific optimizations before data migration
+                await schemaWriter.PreMigrationAsync(destConn, _progressHandler);
 
                 await _dataMigrator.MigrateDataAsync(sourceConn, destConn, tables,
                     async (tableName, rows) =>
@@ -125,12 +120,8 @@ namespace DbRosetta.Core.Services
                         await _progressHandler.SendProgressAsync(tableName, (int)rows);
                     });
 
-                // Revert SQLite optimizations after data migration
-                if (request.DestinationDialect == DatabaseEngine.SQLite && destConn is SqliteConnection sqliteConn2)
-                {
-                    await _progressHandler.SendLogAsync("Reverting SQLite optimizations...");
-                    await RevertSQLiteOptimizationsAsync(sqliteConn2, originalPragmaSettings);
-                }
+                // Revert database-specific optimizations after data migration
+                await schemaWriter.PostMigrationAsync(destConn, _progressHandler);
 
                 await _progressHandler.SendLogAsync("\n[Phase 2/3] Data migration complete.");
 
@@ -170,47 +161,5 @@ namespace DbRosetta.Core.Services
             };
         }
 
-        private async Task<Dictionary<string, string>> ApplySQLiteOptimizationsAsync(SqliteConnection connection)
-        {
-            var originalSettings = new Dictionary<string, string>();
-
-            // Store original PRAGMA values
-            var pragmas = new[] { "foreign_keys", "journal_mode", "synchronous", "cache_size" };
-            foreach (var pragma in pragmas)
-            {
-                using var command = connection.CreateCommand();
-                command.CommandText = $"PRAGMA {pragma}";
-                var result = await command.ExecuteScalarAsync();
-                originalSettings[pragma] = result?.ToString() ?? "";
-            }
-
-            // Apply performance optimizations
-            var optimizations = new Dictionary<string, string>
-            {
-                ["foreign_keys"] = "OFF",
-                ["journal_mode"] = "WAL",
-                ["synchronous"] = "OFF",
-                ["cache_size"] = "10000"
-            };
-
-            foreach (var kvp in optimizations)
-            {
-                using var command = connection.CreateCommand();
-                command.CommandText = $"PRAGMA {kvp.Key}={kvp.Value}";
-                await command.ExecuteNonQueryAsync();
-            }
-
-            return originalSettings;
-        }
-
-        private async Task RevertSQLiteOptimizationsAsync(SqliteConnection connection, Dictionary<string, string> originalSettings)
-        {
-            foreach (var kvp in originalSettings)
-            {
-                using var command = connection.CreateCommand();
-                command.CommandText = $"PRAGMA {kvp.Key}={kvp.Value}";
-                await command.ExecuteNonQueryAsync();
-            }
-        }
     }
 }

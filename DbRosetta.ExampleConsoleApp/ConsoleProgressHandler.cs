@@ -35,12 +35,12 @@ public class ConsoleProgressHandler : IMigrationProgressHandler
     public Task SendProgressAsync(string tableName, int rows)
     {
         // This uses a carriage return to show progress on a single line
-        // lock (_lock)
-        // {
-        //     Console.ForegroundColor = ConsoleColor.Cyan;
-        //     Console.Write($"  -> Migrating {tableName}: {rows} rows transferred...\r");
-        //     Console.ResetColor();
-        // }
+        lock (_lock)
+        {
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.WriteLine($"  -> Migrating {tableName}: {rows} rows transferred...\r");
+            Console.ResetColor();
+        }
         return Task.CompletedTask;
     }
 
