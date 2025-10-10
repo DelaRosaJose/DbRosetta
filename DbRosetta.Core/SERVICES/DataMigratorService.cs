@@ -1,182 +1,119 @@
-﻿using Microsoft.Data.SqlClient;
+﻿using DbRosetta.Core.Interfaces;
+using DbRosetta.Core.Models;
+using Microsoft.Data.SqlClient;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
 using Npgsql;
-using System.Data;
 using System.Data.Common;
+using System.Diagnostics;
 
-public class DataMigrator // No longer needs IDataMigrator if this is the only implementation
+namespace DbRosetta.Core.Services
 {
-    private const int ProgressReportBatchSize = 500; // Use a constant for batch size
-
-    /// <summary>
-    /// Dispatches the migration to the appropriate provider based on the destination connection.
-    /// The progressAction delegate is now async.
-    /// </summary>
-    public async Task MigrateDataAsync(
-        DbConnection sourceConnection,
-        DbConnection destinationConnection,
-        List<TableSchema> tables,
-        Func<string, int, Task> progressAction) // <-- CRITICAL: Signature changed to Func<..., Task>
+    public class DataMigratorService : IDataMigrator
     {
-        if (destinationConnection is SqliteConnection sqliteConnection)
-        {
-            await MigrateDataToSqliteAsync(sourceConnection, sqliteConnection, tables, progressAction);
-        }
-        else if (destinationConnection is NpgsqlConnection npgsqlConnection)
-        {
-            await MigrateDataToPostgreSqlAsync(sourceConnection, npgsqlConnection, tables, progressAction);
-        }
-        else
-        {
-            throw new NotSupportedException($"The destination database type '{destinationConnection.GetType().Name}' is not supported.");
-        }
-    }
+        private readonly DatabaseProviderFactory _factory;
+        private readonly ILogger<DataMigratorService> _logger;
+        private const int DefaultBatchSize = 10000;
+        private const int SQLiteBatchSize = 10000;
+        private const int ProgressReportBatchSize = 500;
 
-    private async Task MigrateDataToPostgreSqlAsync(
-        DbConnection sourceConnection,
-        NpgsqlConnection destinationConnection,
-        List<TableSchema> tables,
-        Func<string, int, Task> progressAction)
-    {
-        foreach (var table in tables)
+        public DataMigratorService(DatabaseProviderFactory factory, ILogger<DataMigratorService> logger)
         {
-            if (!table.Columns.Any()) continue;
-            int rowsMigrated = 0;
-            var selectClauses = table.Columns.Select(c =>
+            _factory = factory;
+            _logger = logger;
+        }
+
+        public async Task MigrateDataAsync(
+            DbConnection sourceConnection,
+            DbConnection destinationConnection,
+            List<TableSchema> tables,
+            Func<string, int, Task> progressAction)
+        {
+            try
             {
-                string colType = c.ColumnType.ToLowerInvariant();
-                if (colType == "hierarchyid" || colType == "geography" || colType == "geometry")
-                {
-                    // ¡La Magia! Le pedimos a SQL Server que lo convierta a string por nosotros.
-                    return $"[{c.ColumnName}].ToString() AS [{c.ColumnName}]";
-                }
-                else
-                {
-                    return $"[{c.ColumnName}]";
-                }
-            });
-            var quotedSourceColumns = string.Join(", ", selectClauses);
-            var selectCommand = sourceConnection.CreateCommand();
-            selectCommand.CommandText = $"SELECT {quotedSourceColumns} FROM [{table.TableSchemaName}].[{table.TableName}]";
+                _logger.LogInformation("Starting data migration for {TableCount} tables.", tables.Count);
 
-            await using var reader = await selectCommand.ExecuteReaderAsync(CommandBehavior.SequentialAccess);
-            var pgColumnNames = string.Join(", ", table.Columns.Select(c => $"\"{c.ColumnName}\""));
-            var copyCommand = $"COPY \"{table.TableName}\" ({pgColumnNames}) FROM STDIN (FORMAT BINARY)";
+                // Determine source and destination engines
+                var sourceEngine = GetEngineFromConnection(sourceConnection);
+                var destinationEngine = GetEngineFromConnection(destinationConnection);
 
-            await using (var importer = await destinationConnection.BeginBinaryImportAsync(copyCommand))
-            {
-                while (await reader.ReadAsync())
+                var dataReader = _factory.GetDataReader(sourceEngine);
+                var dataWriter = _factory.GetDataWriter(destinationEngine);
+
+                // Set batch size based on destination engine for optimal performance
+                var batchSize = destinationEngine == DatabaseEngine.SQLite ? SQLiteBatchSize : DefaultBatchSize;
+
+                foreach (var table in tables)
                 {
-                    await importer.StartRowAsync();
-                    for (int i = 0; i < table.Columns.Count; i++)
+                    if (!table.Columns.Any())
                     {
-                        // --- LÓGICA CORREGIDA ---
-                        string sqlDataTypeName = reader.GetDataTypeName(i).ToLower();
+                        _logger.LogWarning("Skipping table {TableName} as it has no columns.", table.TableName);
+                        continue;
+                    }
 
-                        var value = reader[i];
-                        if (value is DBNull || value == null)
+                    try
+                    {
+                        _logger.LogInformation("Migrating data for table {TableName}.", table.TableName);
+
+                        var totalRows = 0;
+                        var batch = new List<UniversalDataRow>();
+                        var readStopwatch = Stopwatch.StartNew();
+                        await foreach (var row in dataReader.ReadDataAsync(sourceConnection, table))
                         {
-                            await importer.WriteNullAsync();
+                            batch.Add(row);
+                            if (batch.Count >= batchSize)
+                            {
+                                var writeStopwatch = Stopwatch.StartNew();
+                                await dataWriter.WriteDataAsync(destinationConnection, table, batch);
+                                writeStopwatch.Stop();
+                                _logger.LogInformation("Wrote batch of {BatchSize} rows for table {TableName} in {ElapsedMs} ms.", batch.Count, table.TableName, writeStopwatch.ElapsedMilliseconds);
+                                totalRows += batch.Count;
+                                batch.Clear();
+                            }
                         }
-                        else
+                        readStopwatch.Stop();
+                        _logger.LogInformation("Read all rows for table {TableName} in {ElapsedMs} ms.", table.TableName, readStopwatch.ElapsedMilliseconds);
+
+                        // Write remaining batch
+                        if (batch.Count > 0)
                         {
-                            if (value is TimeSpan timeSpanValue) value = TimeOnly.FromTimeSpan(timeSpanValue);
-                            if (value is string stringValue) value = stringValue.TrimEnd();
-                            await importer.WriteAsync(value);
+                            var writeStopwatch = Stopwatch.StartNew();
+                            await dataWriter.WriteDataAsync(destinationConnection, table, batch);
+                            writeStopwatch.Stop();
+                            _logger.LogInformation("Wrote final batch of {BatchSize} rows for table {TableName} in {ElapsedMs} ms.", batch.Count, table.TableName, writeStopwatch.ElapsedMilliseconds);
+                            totalRows += batch.Count;
                         }
 
-                    }
-                    rowsMigrated++;
-                    if (rowsMigrated % ProgressReportBatchSize == 0) await progressAction(table.TableName, rowsMigrated);
-                }
-                await importer.CompleteAsync();
-            }
-            await progressAction(table.TableName, rowsMigrated);
-        }
-    }
+                        await progressAction(table.TableName, totalRows);
 
-    private async Task MigrateDataToSqliteAsync(
-        DbConnection sourceConnection,
-        SqliteConnection destinationConnection,
-        List<TableSchema> tables,
-        Func<string, int, Task> progressAction)
-    {
-        await using var transaction = await destinationConnection.BeginTransactionAsync();
-        foreach (var table in tables)
+                        _logger.LogInformation("Migrated {RowCount} rows for table {TableName}.", totalRows, table.TableName);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error migrating data for table {TableName}.", table.TableName);
+                        throw new DatabaseMigrationException($"Failed to migrate data for table {table.TableName}.", ex);
+                    }
+                }
+
+                _logger.LogInformation("Data migration completed successfully.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Data migration failed.");
+                throw;
+            }
+        }
+
+        private DatabaseEngine GetEngineFromConnection(DbConnection connection)
         {
-            if (!table.Columns.Any()) continue;
-            int rowsMigrated = 0;
-            var selectClauses = table.Columns.Select(c =>
+            return connection switch
             {
-                string colType = c.ColumnType.ToLowerInvariant();
-                if (colType == "hierarchyid" || colType == "geography" || colType == "geometry")
-                {
-                    // ¡La Magia! Le pedimos a SQL Server que lo convierta a string por nosotros.
-                    return $"[{c.ColumnName}].ToString() AS [{c.ColumnName}]";
-                }
-                else
-                {
-                    return $"[{c.ColumnName}]";
-                }
-            });
-            var quotedSourceColumns = string.Join(", ", selectClauses);
-            var selectCommand = sourceConnection.CreateCommand();
-            selectCommand.CommandText = $"SELECT {quotedSourceColumns} FROM [{table.TableSchemaName}].[{table.TableName}]";
-
-            await using var reader = await selectCommand.ExecuteReaderAsync();
-            await using var insertCommand = BuildSqliteInsertCommand(destinationConnection, table, transaction);
-
-            while (await reader.ReadAsync())
-            {
-                insertCommand.Parameters.Clear();
-                for (int i = 0; i < table.Columns.Count; i++)
-                {
-                    var columnName = table.Columns[i].ColumnName;
-                    object finalValue;
-
-
-                    if (reader.IsDBNull(i))
-                    {
-                        finalValue = DBNull.Value;
-                    }
-                    else
-                    {
-                        var rawValue = reader.GetValue(i);
-                        if (rawValue is string stringValue) finalValue = stringValue.TrimEnd();
-                        else finalValue = rawValue;
-                    }
-
-                    var parameter = new SqliteParameter($"@{NormalizeParameterName(columnName)}", finalValue);
-                    insertCommand.Parameters.Add(parameter);
-                }
-
-                await insertCommand.ExecuteNonQueryAsync();
-                rowsMigrated++;
-                if (rowsMigrated % ProgressReportBatchSize == 0) await progressAction(table.TableName, rowsMigrated);
-            }
-            await progressAction(table.TableName, rowsMigrated);
+                SqlConnection => DatabaseEngine.SqlServer,
+                NpgsqlConnection => DatabaseEngine.PostgreSql,
+                SqliteConnection => DatabaseEngine.SQLite,
+                _ => throw new NotSupportedException($"Unsupported connection type: {connection.GetType().Name}")
+            };
         }
-        await transaction.CommitAsync();
-    }
 
-    // --- THIS IS THE CORRECTED HELPER METHOD ---
-    private SqliteCommand BuildSqliteInsertCommand(
-        SqliteConnection connection,
-        TableSchema table,
-        DbTransaction transaction) // <-- Changed back to the generic DbTransaction
-    {
-        var columnNames = string.Join(", ", table.Columns.Select(c => $"\"{c.ColumnName}\""));
-        var parameterNames = string.Join(", ", table.Columns.Select(c => $"@{NormalizeParameterName(c.ColumnName)}"));
-
-        var command = connection.CreateCommand();
-        command.Transaction = (SqliteTransaction)transaction;
-        command.CommandText = $"INSERT INTO \"{table.TableName}\" ({columnNames}) VALUES ({parameterNames});";
-        return command;
-    }
-
-
-    private string NormalizeParameterName(string columnName)
-    {
-        return columnName.Replace(" ", "").Replace("-", "");
     }
 }

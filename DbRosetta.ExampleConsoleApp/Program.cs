@@ -3,6 +3,8 @@
 
 using DbRosetta.Core; // <-- ADD THIS using statement
 using DbRosetta.Core.Services; // <-- ADD THIS if you used the sub-namespace
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 internal class Program
 {
@@ -17,21 +19,29 @@ internal class Program
             SourceDialect = DatabaseEngine.SqlServer, // Add this line
             SourceConnectionString = "Server=MSI\\SQLEXPRESS;Database=AdventureWorks2014;Trusted_Connection=True;TrustServerCertificate=True;",
             DestinationDialect = DatabaseEngine.SQLite,
-            DestinationConnectionString = "Data.sqlite"
+            DestinationConnectionString = @"E:\DbRosetta\Output\AdventureWorks.sqlite"
         };
 
 
-        var migrationService = new MigrationService(new ConsoleProgressHandler()); // <-- See below
+        // The service and handler are created here.
+        var progressHandler = new ConsoleProgressHandler();
+        var factory = new DatabaseProviderFactory();
+        var logger = new NullLogger<DataMigratorService>();
+        var dataMigrator = new DataMigratorService(factory, logger);
+        var migrationService = new MigrationService(progressHandler, factory, dataMigrator);
 
         try
         {
-            // 3. Call the service and tell it how to log progress (by writing to the console)
+            // The "await" keyword ensures the application waits here until the
+            // entire migration is finished before moving to the finally block.
             await migrationService.ExecuteAsync(request);
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine("\nMigration failed. Check logs for details.");
+            // The service will log its own detailed error via the handler.
+            // This is a final catch-all for any unexpected failures.
+            Console.ForegroundColor = ConsoleColor.DarkRed;
+            Console.WriteLine($"\nAn unhandled exception occurred in the application: {ex.Message}");
             Console.ResetColor();
         }
         finally
