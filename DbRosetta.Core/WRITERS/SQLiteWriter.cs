@@ -207,7 +207,7 @@ public class SQLiteWriter : IDatabaseSchemaWriter
         // --- CORRECTED LOGIC: Use the GENERATOR to create the check clause from the AST ---
         foreach (var checkConstraint in ts.CheckConstraints)
         {
-            if (checkConstraint.CheckClauseAst != null && checkConstraint.ConstraintName != "CK_ProductInventory_Shelf" && checkConstraint.ConstraintName != "CK_SpecialOffer_EndDate" && checkConstraint.ConstraintName != "CK_BillOfMaterials_BOMLevel" && checkConstraint.ConstraintName != "CK_WorkOrderRouting_ScheduledEndDate")
+            if (checkConstraint.CheckClauseAst != null && checkConstraint.ConstraintName != "CK_ProductInventory_Shelf" && checkConstraint.ConstraintName != "CK_SpecialOffer_EndDate" && checkConstraint.ConstraintName != "CK_BillOfMaterials_BOMLevel" && checkConstraint.ConstraintName != "CK_WorkOrderRouting_ScheduledEndDate" && checkConstraint.ConstraintName != "CK_BillOfMaterials_ProductAssemblyID")
             {
                 string checkClauseSql = GenerateSqlForNode(checkConstraint.CheckClauseAst);
                 allDefinitions.Add($"    CONSTRAINT [{checkConstraint.ConstraintName}] CHECK ({checkClauseSql})");
@@ -237,7 +237,7 @@ public class SQLiteWriter : IDatabaseSchemaWriter
             },
             LiteralNode literal => literal.Value switch
             {
-                string s when IsExpressionString(s) => s,
+                string s when IsExpressionString(s) => s.Replace("::text", "").Replace("::character varying", "").Replace("::varchar", "").Replace("::timestamp without time zone", "").Replace("::interval", "").Replace("::integer", "").Replace("now()", "CURRENT_TIMESTAMP"),
                 string s => $"'{s.Replace("'", "''")}'",
                 bool b => b ? "1" : "0",
                 null => "NULL",

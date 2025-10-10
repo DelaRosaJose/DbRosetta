@@ -106,8 +106,8 @@ public class PostgreSqlSchemaReader : IDatabaseSchemaReader
                 string defaultString = reader["column_default"]?.ToString() ?? string.Empty;
                 if (!string.IsNullOrWhiteSpace(defaultString))
                 {
-                    column.DefaultValueAsString = defaultString;
                     column.DefaultValueAst = _parser.Parse(defaultString);
+                    column.DefaultValueAsString = GenerateSqlForNode(column.DefaultValueAst);
                 }
                 columns.Add(column);
             }
@@ -221,8 +221,8 @@ public class PostgreSqlSchemaReader : IDatabaseSchemaReader
             {
                 var constraint = new CheckConstraintSchema { ConstraintName = reader["constraint_name"].ToString()! };
                 string clauseString = reader["check_clause"].ToString()!;
-                constraint.CheckClauseAsString = clauseString;
                 constraint.CheckClauseAst = _parser.Parse(clauseString);
+                constraint.CheckClauseAsString = GenerateSqlForNode(constraint.CheckClauseAst);
                 constraints.Add(constraint);
             }
         }
@@ -287,4 +287,76 @@ public class PostgreSqlSchemaReader : IDatabaseSchemaReader
         }
         return triggers;
     }
+
+    /// <summary>
+    /// Generates SQLite-compatible SQL syntax from the universal AST.
+    /// </summary>
+    private string GenerateSqlForNode(ExpressionNode node)
+    {
+        return node switch
+        {
+            FunctionCallNode func => func.UniversalFunctionName switch
+            {
+                "GetCurrentTimestamp" => "CURRENT_TIMESTAMP",
+                "GenerateUuid" => "(lower(hex(randomblob(16))))",
+                "upper" => $"UPPER({GenerateSqlForNode(func.Arguments[0])})",
+                "dateadd" => GenerateDateAddSql(func),
+                _ => throw new NotSupportedException($"Unsupported universal function: {func.UniversalFunctionName}")
+            },
+            LiteralNode literal => literal.Value switch
+            {
+                string s when IsExpressionString(s) => s.Replace("::text", "").Replace("::character varying", "").Replace("::varchar", ""),
+                string s => $"'{s.Replace("'", "''")}'",
+                bool b => b ? "1" : "0",
+                null => "NULL",
+                _ => literal.Value?.ToString() ?? "NULL"
+            },
+            IdentifierNode identifier => $"[{identifier.Name}]",
+            OperatorNode op => GenerateOperatorSql(op),
+            _ => throw new NotSupportedException($"Unsupported ExpressionNode type: {node.GetType().Name}")
+        };
+    }
+
+    private bool IsExpressionString(string s)
+    {
+        return s.Contains(" OR ") || s.Contains(" IS ") || s.Contains(" AND ") || s.Contains("=");
+    }
+
+    private string GenerateOperatorSql(OperatorNode op)
+    {
+        if (op.Operator.Equals("IN", StringComparison.OrdinalIgnoreCase) && op.Left is IdentifierNode identifier)
+        {
+            // For IN expressions, add NULL handling: (column IS NULL OR column IN (...))
+            return $"({GenerateSqlForNode(op.Left!)} IS NULL OR {GenerateSqlForNode(op.Left!)} {op.Operator} {GenerateSqlForNode(op.Right!)})";
+        }
+        if (op.Operator.Equals("LIKE", StringComparison.OrdinalIgnoreCase))
+        {
+            // Make LIKE case insensitive
+            return $"({GenerateSqlForNode(op.Left!)} LIKE {GenerateSqlForNode(op.Right!)} COLLATE NOCASE)";
+        }
+        return $"({GenerateSqlForNode(op.Left!)} {op.Operator} {GenerateSqlForNode(op.Right!)})";
+    }
+
+    private string GenerateDateAddSql(FunctionCallNode func)
+    {
+        if (func.Arguments.Count != 3) throw new ArgumentException("DateAdd requires 3 arguments");
+        string part = (func.Arguments[0] as LiteralNode)?.Value as string ?? throw new ArgumentException("First argument must be a string literal");
+        var numberNode = func.Arguments[1] as LiteralNode;
+        if (numberNode?.Value is not (int or long or decimal)) throw new ArgumentException("Second argument must be numeric");
+        int number = Convert.ToInt32(numberNode.Value);
+        string dateSql = GenerateSqlForNode(func.Arguments[2]);
+        string modifier = $"{(number >= 0 ? "+" : "")}{number} {MapDatePart(part)}";
+        return $"date({dateSql}, '{modifier}')";
+    }
+
+    private string MapDatePart(string part) => part.ToLowerInvariant() switch
+    {
+        "year" or "yy" or "yyyy" => "year",
+        "month" or "mm" or "m" => "month",
+        "day" or "dd" or "d" => "day",
+        "hour" or "hh" => "hour",
+        "minute" or "mi" or "n" => "minute",
+        "second" or "ss" or "s" => "second",
+        _ => throw new NotSupportedException($"Unsupported date part: {part}")
+    };
 }
